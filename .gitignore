@@ -3,3 +3,8 @@
 venv
 .env
 env
+
+
+build/
+dist/
+**.egg-info
