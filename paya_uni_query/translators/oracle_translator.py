@@ -1,7 +1,7 @@
-from .base import QueryTranslator
+from paya_uni_query.translators.base import QueryTranslator
 
 
-class MySQLTranslator(QueryTranslator):
+class OracleTranslator(QueryTranslator):
     def translate(self, query):
         select_clause = f"SELECT {', '.join(query['select'])}"
         from_clause = f"FROM {query['from']}"
@@ -9,24 +9,21 @@ class MySQLTranslator(QueryTranslator):
         where_conditions = []
 
         if "must" in query["where"]:
-            must_conditions = " AND ".join(self._parse_condition(cond) for cond in query["where"]["must"])
+            must_conditions = " AND ".join(
+                self._parse_condition(cond) for cond in query["where"]["must"]
+            )
             where_conditions.append(f"({must_conditions})")
 
         if "must_not" in query["where"]:
             must_not_conditions = " AND ".join(
-                self._parse_condition(cond, negate=True) for cond in query["where"]["must_not"])
+                self._parse_condition(cond, negate=True)
+                for cond in query["where"]["must_not"]
+            )
             where_conditions.append(f"NOT ({must_not_conditions})")
 
-        if "should" in query["where"]:
-            should_conditions = " OR ".join(self._parse_condition(cond) for cond in query["where"]["should"])
-            where_conditions.append(f"({should_conditions})")
-
-        if "match" in query["where"]:
-            match_conditions = " AND ".join(
-                f"{field} LIKE '%{value}%'" for field, value in query["where"]["match"].items())
-            where_conditions.append(f"({match_conditions})")
-
-        where_clause = "WHERE " + " AND ".join(where_conditions) if where_conditions else ""
+        where_clause = (
+            "WHERE " + " AND ".join(where_conditions) if where_conditions else ""
+        )
 
         return f"{select_clause} {from_clause} {where_clause};"
 
@@ -40,7 +37,7 @@ class MySQLTranslator(QueryTranslator):
                 "lt": "<",
                 "lte": "<=",
                 "eq": "=",
-                "neq": "!="
+                "neq": "!=",
             }.get(op, "=")
             return f"{field} {sql_op} {value}"
         else:

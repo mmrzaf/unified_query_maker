@@ -5,7 +5,6 @@ The **Paya Uniquery** library is designed to be a versatile query translation li
 ## Architecture
 
 The library is organized into the following components:
-- **Parsers**: Responsible for parsing UQL queries.
 - **Translators**: Contains various translators to convert UQL into specific database query formats (e.g., MySQL, Elasticsearch).
 - **Validators**: Ensures the correctness of UQL queries through schema and semantic validation.
 

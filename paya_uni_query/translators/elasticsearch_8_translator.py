@@ -1,25 +1,19 @@
-from .base import QueryTranslator
+from paya_uni_query.translators.base import QueryTranslator
 
 
-class ElasticsearchTranslator(QueryTranslator):
+class Elasticsearch8Translator(QueryTranslator):
     def translate(self, query):
-        es_query = {
-            "query": {
-                "bool": {}
-            }
-        }
+        es_query = {"query": {"bool": {}}}
 
         if "must" in query["where"]:
-            es_query["query"]["bool"]["must"] = [self._parse_condition(cond) for cond in query["where"]["must"]]
+            es_query["query"]["bool"]["must"] = [
+                self._parse_condition(cond) for cond in query["where"]["must"]
+            ]
 
         if "must_not" in query["where"]:
-            es_query["query"]["bool"]["must_not"] = [self._parse_condition(cond) for cond in query["where"]["must_not"]]
-
-        if "should" in query["where"]:
-            es_query["query"]["bool"]["should"] = [self._parse_condition(cond) for cond in query["where"]["should"]]
-
-        if "match" in query["where"]:
-            es_query["query"]["bool"]["must"].append({"match": query["where"]["match"]})
+            es_query["query"]["bool"]["must_not"] = [
+                self._parse_condition(cond) for cond in query["where"]["must_not"]
+            ]
 
         return es_query
 
@@ -33,7 +27,7 @@ class ElasticsearchTranslator(QueryTranslator):
                 "lt": "range",
                 "lte": "range",
                 "eq": "term",
-                "neq": "must_not"
+                "neq": "must_not",
             }.get(op, "term")
             if es_op == "range":
                 return {"range": {field: {op: value}}}
