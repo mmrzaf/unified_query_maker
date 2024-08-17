@@ -1,0 +1,24 @@
+import unittest
+from paya_uni_query.translators.mysql_translator import MySQLTranslator
+
+
+class TestMySQLTranslator(unittest.TestCase):
+    def setUp(self):
+        self.translator = MySQLTranslator()
+
+    def test_translate_basic_query(self):
+        uql = {
+            "select": ["name", "age"],
+            "from": "users",
+            "where": {
+                "must": [{"age": {"gt": 30}}, {"status": "active"}],
+                "must_not": [{"role": "admin"}],
+            },
+        }
+        expected = "SELECT name, age FROM users WHERE (age > 30 AND status = 'active') AND NOT (role = 'admin');"
+        result = self.translator.translate(uql)
+        self.assertEqual(result, expected)
+
+
+if __name__ == "__main__":
+    unittest.main()

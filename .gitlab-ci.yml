@@ -1,0 +1,38 @@
+stages:
+  - build
+  - test
+  - deploy
+
+build:
+  stage: build
+  image: python:3.10
+  script:
+    - pip install --upgrade pip
+    - pip install setuptools wheel
+    - python setup.py bdist_wheel
+  artifacts:
+    paths:
+      - dist/*.whl
+  only:
+    - master
+    - tags
+
+test:
+  stage: test
+  image: python:3.10
+  script:
+    - pip install --upgrade pip
+    - pip install -r requirements.txt
+    - python tests/run_tests.py
+  only:
+    - master
+    - tags
+
+deploy:
+  stage: deploy
+  image: python:3.8
+  script:
+    - pip install twine
+    - twine upload --repository-url https://10.16.110.82:8080/ dist/*
+  only:
+    - tags
