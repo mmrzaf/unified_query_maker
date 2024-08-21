@@ -1,7 +1,7 @@
-from paya_uni_query.translators.base import QueryTranslator
+from unified_query_maker.translators.base import QueryTranslator
 
 
-class ElasticsearchTranslator(QueryTranslator):
+class Elasticsearch7Translator(QueryTranslator):
     def translate(self, query):
         es_query = {"query": {"bool": {}}}
 
@@ -14,14 +14,6 @@ class ElasticsearchTranslator(QueryTranslator):
             es_query["query"]["bool"]["must_not"] = [
                 self._parse_condition(cond) for cond in query["where"]["must_not"]
             ]
-
-        if "should" in query["where"]:
-            es_query["query"]["bool"]["should"] = [
-                self._parse_condition(cond) for cond in query["where"]["should"]
-            ]
-
-        if "match" in query["where"]:
-            es_query["query"]["bool"]["must"].append({"match": query["where"]["match"]})
 
         return es_query
 

@@ -1,4 +1,4 @@
-from paya_uni_query.translators.base import QueryTranslator
+from unified_query_maker.translators.base import QueryTranslator
 
 
 class MongoDBTranslator(QueryTranslator):

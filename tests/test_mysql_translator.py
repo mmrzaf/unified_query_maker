@@ -1,5 +1,5 @@
 import unittest
-from paya_uni_query.translators.mysql_translator import MySQLTranslator
+from unified_query_maker.translators.mysql_translator import MySQLTranslator
 
 
 class TestMySQLTranslator(unittest.TestCase):

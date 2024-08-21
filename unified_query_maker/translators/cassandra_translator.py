@@ -1,7 +1,7 @@
-from paya_uni_query.translators.base import QueryTranslator
+from unified_query_maker.translators.base import QueryTranslator
 
 
-class MSSQLTranslator(QueryTranslator):
+class CassandraTranslator(QueryTranslator):
     def translate(self, query):
         select_clause = f"SELECT {', '.join(query['select'])}"
         from_clause = f"FROM {query['from']}"
@@ -31,7 +31,7 @@ class MSSQLTranslator(QueryTranslator):
         field, op_value = next(iter(condition.items()))
         if isinstance(op_value, dict):
             op, value = next(iter(op_value.items()))
-            sql_op = {
+            cql_op = {
                 "gt": ">",
                 "gte": ">=",
                 "lt": "<",
@@ -39,6 +39,6 @@ class MSSQLTranslator(QueryTranslator):
                 "eq": "=",
                 "neq": "!=",
             }.get(op, "=")
-            return f"{field} {sql_op} {value}"
+            return f"{field} {cql_op} {value}"
         else:
             return f"{field} = '{op_value}'"

@@ -1,7 +1,7 @@
-from paya_uni_query.translators.base import QueryTranslator
+from unified_query_maker.translators.base import QueryTranslator
 
 
-class MySQLTranslator(QueryTranslator):
+class OracleTranslator(QueryTranslator):
     def translate(self, query):
         select_clause = f"SELECT {', '.join(query['select'])}"
         from_clause = f"FROM {query['from']}"
@@ -20,19 +20,6 @@ class MySQLTranslator(QueryTranslator):
                 for cond in query["where"]["must_not"]
             )
             where_conditions.append(f"NOT ({must_not_conditions})")
-
-        if "should" in query["where"]:
-            should_conditions = " OR ".join(
-                self._parse_condition(cond) for cond in query["where"]["should"]
-            )
-            where_conditions.append(f"({should_conditions})")
-
-        if "match" in query["where"]:
-            match_conditions = " AND ".join(
-                f"{field} LIKE '%{value}%'"
-                for field, value in query["where"]["match"].items()
-            )
-            where_conditions.append(f"({match_conditions})")
 
         where_clause = (
             "WHERE " + " AND ".join(where_conditions) if where_conditions else ""

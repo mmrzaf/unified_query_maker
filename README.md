@@ -102,7 +102,7 @@ Here is an example of a UQL query that conforms to the schema:
 Here’s how you can use the Paya Uniquery library in your code:
 
 ```python
-from paya_uni_query import QueryTranslator, MySQLTranslator, validate_uql
+from unified_query_maker import QueryTranslator, MySQLTranslator, validate_uql
 
 uql = {
   "select": ["name", "age"],

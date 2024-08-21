@@ -1,5 +1,5 @@
 import unittest
-from paya_uni_query.translators.elasticsearch_7_translator import (
+from unified_query_maker.translators.elasticsearch_7_translator import (
     Elasticsearch7Translator,
 )
 

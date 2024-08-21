@@ -1,7 +1,7 @@
-from paya_uni_query.translators.base import QueryTranslator
+from unified_query_maker.translators.base import QueryTranslator
 
 
-class MariaDBTranslator(QueryTranslator):
+class PostgreSQLTranslator(QueryTranslator):
     def translate(self, query):
         select_clause = f"SELECT {', '.join(query['select'])}"
         from_clause = f"FROM {query['from']}"

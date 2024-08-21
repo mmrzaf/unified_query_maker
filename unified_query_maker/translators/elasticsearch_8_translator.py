@@ -1,7 +1,7 @@
-from paya_uni_query.translators.base import QueryTranslator
+from unified_query_maker.translators.base import QueryTranslator
 
 
-class Elasticsearch7Translator(QueryTranslator):
+class Elasticsearch8Translator(QueryTranslator):
     def translate(self, query):
         es_query = {"query": {"bool": {}}}
 

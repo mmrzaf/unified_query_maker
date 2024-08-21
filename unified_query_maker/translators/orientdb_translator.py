@@ -1,9 +1,10 @@
-from paya_uni_query.translators.base import QueryTranslator
+from unified_query_maker.translators.base import QueryTranslator
 
 
-class Neo4jTranslator(QueryTranslator):
+class OrientDBTranslator(QueryTranslator):
     def translate(self, query):
-        match_clause = f"MATCH (n:{query['from']})"
+        select_clause = f"SELECT {', '.join(query['select'])}"
+        from_clause = f"FROM {query['from']}"
 
         where_conditions = []
 
@@ -24,13 +25,13 @@ class Neo4jTranslator(QueryTranslator):
             "WHERE " + " AND ".join(where_conditions) if where_conditions else ""
         )
 
-        return f"{match_clause} {where_clause} RETURN n;"
+        return f"{select_clause} {from_clause} {where_clause};"
 
     def _parse_condition(self, condition, negate=False):
         field, op_value = next(iter(condition.items()))
         if isinstance(op_value, dict):
             op, value = next(iter(op_value.items()))
-            cypher_op = {
+            sql_op = {
                 "gt": ">",
                 "gte": ">=",
                 "lt": "<",
@@ -38,6 +39,6 @@ class Neo4jTranslator(QueryTranslator):
                 "eq": "=",
                 "neq": "!=",
             }.get(op, "=")
-            return f"n.{field} {cypher_op} {value}"
+            return f"{field} {sql_op} {value}"
         else:
-            return f"n.{field} = '{op_value}'"
+            return f"{field} = '{op_value}'"

@@ -1,5 +1,5 @@
 import unittest
-from paya_uni_query.translators.cassandra_translator import CassandraTranslator
+from unified_query_maker.translators.cassandra_translator import CassandraTranslator
 
 
 class TestCassandraTranslator(unittest.TestCase):
