@@ -1,44 +1,42 @@
-from unified_query_maker.translators.base import QueryTranslator
+from typing import Dict, Any
+from .base_sql import SQLTranslator
 
 
-class OracleTranslator(QueryTranslator):
-    def translate(self, query):
-        select_clause = f"SELECT {', '.join(query['select'])}"
-        from_clause = f"FROM {query['from']}"
+class OracleTranslator(SQLTranslator):
+    """Oracle specific translator"""
 
-        where_conditions = []
+    def _escape_identifier(self, identifier: str) -> str:
+        """Escape identifiers with double quotes in Oracle"""
+        return f'"{identifier}"'
 
-        if "must" in query["where"]:
-            must_conditions = " AND ".join(
-                self._parse_condition(cond) for cond in query["where"]["must"]
-            )
-            where_conditions.append(f"({must_conditions})")
+    def translate(self, query: Dict[str, Any]) -> str:
+        """Oracle has specific pagination approach using ROWNUM"""
+        if "limit" not in query and "offset" not in query:
+            return super().translate(query)
 
-        if "must_not" in query["where"]:
-            must_not_conditions = " AND ".join(
-                self._parse_condition(cond, negate=True)
-                for cond in query["where"]["must_not"]
-            )
-            where_conditions.append(f"NOT ({must_not_conditions})")
+        limit = query.get("limit")
+        offset = query.get("offset", 0)
 
-        where_clause = (
-            "WHERE " + " AND ".join(where_conditions) if where_conditions else ""
-        )
+        select_clause = self._build_select_clause(query)
+        from_clause = self._build_from_clause(query)
+        where_clause = self._build_where_clause(query)
+        order_by_clause = self._build_order_by_clause(query)
 
-        return f"{select_clause} {from_clause} {where_clause};"
-
-    def _parse_condition(self, condition, negate=False):
-        field, op_value = next(iter(condition.items()))
-        if isinstance(op_value, dict):
-            op, value = next(iter(op_value.items()))
-            sql_op = {
-                "gt": ">",
-                "gte": ">=",
-                "lt": "<",
-                "lte": "<=",
-                "eq": "=",
-                "neq": "!=",
-            }.get(op, "=")
-            return f"{field} {sql_op} {value}"
+        if limit is not None and offset > 0:
+            pagination = f"OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY"
+        elif limit is not None:
+            pagination = f"FETCH FIRST {limit} ROWS ONLY"
         else:
-            return f"{field} = '{op_value}'"
+            pagination = ""
+
+        sql_parts = [
+            select_clause,
+            from_clause,
+            where_clause,
+            order_by_clause,
+            pagination,
+        ]
+
+        sql_query = " ".join([part for part in sql_parts if part])
+
+        return f"{sql_query}{self._get_query_terminator()}"

@@ -1,57 +1,14 @@
-from unified_query_maker.translators.base import QueryTranslator
+from .base_sql import SQLTranslator
 
 
-class MySQLTranslator(QueryTranslator):
-    def translate(self, query):
-        select_clause = f"SELECT {', '.join(query['select'])}"
-        from_clause = f"FROM {query['from']}"
+class MySQLTranslator(SQLTranslator):
+    """MySQL specific translator"""
 
-        where_conditions = []
+    def _escape_identifier(self, identifier: str) -> str:
+        """Escape identifiers with backticks in MySQL"""
+        return f"`{identifier}`"
 
-        if "must" in query["where"]:
-            must_conditions = " AND ".join(
-                self._parse_condition(cond) for cond in query["where"]["must"]
-            )
-            where_conditions.append(f"({must_conditions})")
-
-        if "must_not" in query["where"]:
-            must_not_conditions = " AND ".join(
-                self._parse_condition(cond, negate=True)
-                for cond in query["where"]["must_not"]
-            )
-            where_conditions.append(f"NOT ({must_not_conditions})")
-
-        if "should" in query["where"]:
-            should_conditions = " OR ".join(
-                self._parse_condition(cond) for cond in query["where"]["should"]
-            )
-            where_conditions.append(f"({should_conditions})")
-
-        if "match" in query["where"]:
-            match_conditions = " AND ".join(
-                f"{field} LIKE '%{value}%'"
-                for field, value in query["where"]["match"].items()
-            )
-            where_conditions.append(f"({match_conditions})")
-
-        where_clause = (
-            "WHERE " + " AND ".join(where_conditions) if where_conditions else ""
-        )
-
-        return f"{select_clause} {from_clause} {where_clause};"
-
-    def _parse_condition(self, condition, negate=False):
-        field, op_value = next(iter(condition.items()))
-        if isinstance(op_value, dict):
-            op, value = next(iter(op_value.items()))
-            sql_op = {
-                "gt": ">",
-                "gte": ">=",
-                "lt": "<",
-                "lte": "<=",
-                "eq": "=",
-                "neq": "!=",
-            }.get(op, "=")
-            return f"{field} {sql_op} {value}"
-        else:
-            return f"{field} = '{op_value}'"
+    def _escape_like_value(self, value: str) -> str:
+        """MySQL uses backslash for escaping LIKE special chars"""
+        escaped = self._escape_string(value)
+        return escaped.replace("%", "\\%").replace("_", "\\_")

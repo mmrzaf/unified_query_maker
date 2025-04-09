@@ -1,44 +1,27 @@
-from unified_query_maker.translators.base import QueryTranslator
+from .base_sql import SQLTranslator
 
 
-class MSSQLTranslator(QueryTranslator):
-    def translate(self, query):
-        select_clause = f"SELECT {', '.join(query['select'])}"
-        from_clause = f"FROM {query['from']}"
+class MSSQLTranslator(SQLTranslator):
+    """Microsoft SQL Server specific translator"""
 
-        where_conditions = []
+    def _escape_identifier(self, identifier: str) -> str:
+        """Escape identifiers with square brackets in MSSQL"""
+        return f"[{identifier}]"
 
-        if "must" in query["where"]:
-            must_conditions = " AND ".join(
-                self._parse_condition(cond) for cond in query["where"]["must"]
-            )
-            where_conditions.append(f"({must_conditions})")
+    def _build_limit_offset(self, limit: int, offset: int) -> str:
+        """SQL Server uses OFFSET FETCH syntax instead of LIMIT OFFSET"""
+        return f"OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY"
 
-        if "must_not" in query["where"]:
-            must_not_conditions = " AND ".join(
-                self._parse_condition(cond, negate=True)
-                for cond in query["where"]["must_not"]
-            )
-            where_conditions.append(f"NOT ({must_not_conditions})")
+    def _build_limit_clause(self, query: Dict[str, Any]) -> str:
+        """Build the LIMIT clause for SQL Server"""
+        if "limit" not in query:
+            return ""
 
-        where_clause = (
-            "WHERE " + " AND ".join(where_conditions) if where_conditions else ""
-        )
+        if "orderBy" not in query or not query["orderBy"]:
+            # SQL Server requires ORDER BY for OFFSET/FETCH
+            return f"ORDER BY (SELECT NULL) OFFSET 0 ROWS FETCH NEXT {query['limit']} ROWS ONLY"
 
-        return f"{select_clause} {from_clause} {where_clause};"
+        limit = query["limit"]
+        offset = query.get("offset", 0)
 
-    def _parse_condition(self, condition, negate=False):
-        field, op_value = next(iter(condition.items()))
-        if isinstance(op_value, dict):
-            op, value = next(iter(op_value.items()))
-            sql_op = {
-                "gt": ">",
-                "gte": ">=",
-                "lt": "<",
-                "lte": "<=",
-                "eq": "=",
-                "neq": "!=",
-            }.get(op, "=")
-            return f"{field} {sql_op} {value}"
-        else:
-            return f"{field} = '{op_value}'"
+        return f"OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY"
