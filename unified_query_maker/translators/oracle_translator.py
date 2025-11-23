@@ -1,6 +1,7 @@
-from typing import Dict, Any
+from typing import Dict, Any, List
+from pydantic import ValidationError
 from .base_sql import SQLTranslator
-
+from unified_query_maker.models import UQLQuery
 
 class OracleTranslator(SQLTranslator):
     """Oracle specific translator"""
@@ -10,26 +11,32 @@ class OracleTranslator(SQLTranslator):
         return f'"{identifier}"'
 
     def translate(self, query: Dict[str, Any]) -> str:
-        """Oracle has specific pagination approach using ROWNUM"""
-        if "limit" not in query and "offset" not in query:
-            return super().translate(query)
+        """Oracle has specific pagination approach (OFFSET FETCH)"""
 
-        limit = query.get("limit")
-        offset = query.get("offset", 0)
+        try:
+            parsed_query = UQLQuery.model_validate(query)
+        except ValidationError as e:
+            raise ValueError(f"Invalid UQL query: {e}") from e
 
-        select_clause = self._build_select_clause(query)
-        from_clause = self._build_from_clause(query)
-        where_clause = self._build_where_clause(query)
-        order_by_clause = self._build_order_by_clause(query)
+        select_clause = self._build_select_clause(parsed_query)
+        from_clause = self._build_from_clause(parsed_query)
+        where_clause = self._build_where_clause(parsed_query)
+        order_by_clause = self._build_order_by_clause(parsed_query)
 
-        if limit is not None and offset > 0:
-            pagination = f"OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY"
-        elif limit is not None:
-            pagination = f"FETCH FIRST {limit} ROWS ONLY"
-        else:
-            pagination = ""
+        pagination = ""
+        limit = parsed_query.limit
+        offset = parsed_query.offset or 0
 
-        sql_parts = [
+        if limit is not None:
+            if offset > 0:
+                pagination = f"OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY"
+            else:
+                pagination = f"FETCH FIRST {limit} ROWS ONLY"
+        elif offset > 0:
+             # Offset without limit
+             pagination = f"OFFSET {offset} ROWS"
+
+        sql_parts: List[str] = [
             select_clause,
             from_clause,
             where_clause,
@@ -38,5 +45,4 @@ class OracleTranslator(SQLTranslator):
         ]
 
         sql_query = " ".join([part for part in sql_parts if part])
-
         return f"{sql_query}{self._get_query_terminator()}"
