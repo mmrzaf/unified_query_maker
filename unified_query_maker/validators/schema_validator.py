@@ -1,44 +1,19 @@
-import jsonschema
+from pydantic import ValidationError
+from typing import Optional, Dict, Any
+from unified_query_maker.models import UQLQuery
 
-UQL_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "select": {"type": "array", "items": {"type": "string"}},
-        "from": {"type": "string"},
-        "where": {
-            "type": "object",
-            "properties": {
-                "must": {"type": "array", "items": {"type": "object"}},
-                "must_not": {"type": "array", "items": {"type": "object"}},
-            },
-            "description": "Filtering criteria for the query.",
-        },
-        "orderBy": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "field": {"type": "string", "description": "Field to sort by."},
-                    "order": {
-                        "type": "string",
-                        "enum": ["ASC", "DESC"],
-                        "description": "Sort order.",
-                    },
-                },
-                "required": ["field", "order"],
-                "description": "Sorting criteria for the query results.",
-            },
-        },
-    },
-    "required": ["select", "from"],
-    "additionalProperties": False,
-}
+def validate_uql_schema(uql: Dict[str, Any]) -> Optional[UQLQuery]:
+    """
+    Validates the UQL query schema using Pydantic models.
+    
+    Args:
+        uql: The raw UQL query dictionary.
 
-
-def validate_uql_schema(uql):
+    Returns:
+        A parsed UQLQuery model instance if valid, else None.
+    """
     try:
-        jsonschema.validate(instance=uql, schema=UQL_SCHEMA)
-        return True
-    except jsonschema.exceptions.ValidationError as ve:
+        return UQLQuery.model_validate(uql)
+    except ValidationError as ve:
         print(f"Schema validation error: {ve}")
-        return False
+        return None
