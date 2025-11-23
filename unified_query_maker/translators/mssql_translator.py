@@ -1,6 +1,6 @@
 from typing import Dict, Any
 from .base_sql import SQLTranslator
-
+from unified_query_maker.models import UQLQuery
 
 class MSSQLTranslator(SQLTranslator):
     """Microsoft SQL Server specific translator"""
@@ -13,16 +13,17 @@ class MSSQLTranslator(SQLTranslator):
         """SQL Server uses OFFSET FETCH syntax instead of LIMIT OFFSET"""
         return f"OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY"
 
-    def _build_limit_clause(self, query: Dict[str, Any]) -> str:
+    def _build_limit_clause(self, query: UQLQuery) -> str:
         """Build the LIMIT clause for SQL Server"""
-        if "limit" not in query:
+        if query.limit is None:
             return ""
 
-        if "orderBy" not in query or not query["orderBy"]:
+        if not query.orderBy:
             # SQL Server requires ORDER BY for OFFSET/FETCH
-            return f"ORDER BY (SELECT NULL) OFFSET 0 ROWS FETCH NEXT {query['limit']} ROWS ONLY"
+            # Use a constant to satisfy syntax if no order is given
+            return f"ORDER BY (SELECT NULL) OFFSET 0 ROWS FETCH NEXT {query.limit} ROWS ONLY"
 
-        limit = query["limit"]
-        offset = query.get("offset", 0)
+        limit = query.limit
+        offset = query.offset or 0
 
         return f"OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY"

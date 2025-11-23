@@ -1,6 +1,5 @@
 from .base_sql import SQLTranslator
 
-
 class PostgreSQLTranslator(SQLTranslator):
     """PostgreSQL specific translator"""
 
@@ -8,13 +7,9 @@ class PostgreSQLTranslator(SQLTranslator):
         """Escape identifiers with double quotes in PostgreSQL"""
         return f'"{identifier}"'
 
-    def _escape_like_value(self, value: str) -> str:
-        """PostgreSQL uses ESCAPE option for LIKE patterns"""
-        escaped = self._escape_string(value)
-        return escaped.replace("%", "\\%").replace("_", "\\_")
-
-    def _build_match_condition(self, field: str, value: str) -> str:
-        """Build LIKE condition with ESCAPE clause for PostgreSQL"""
-        field = self._escape_identifier(field)
-        escaped_value = self._escape_like_value(value)
-        return f"{field} LIKE '%{escaped_value}%' ESCAPE '\\'"
+    def _escape_string(self, value: str) -> str:
+        """
+        Escape string values for PostgreSQL.
+        PostgreSQL also uses backslash for escaping.
+        """
+        return value.replace("'", "''").replace("\\", "\\\\")
