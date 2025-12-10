@@ -3,8 +3,8 @@ from pydantic import ValidationError
 from unified_query_maker.translators.base import QueryTranslator
 from unified_query_maker.models import UQLQuery, QueryOutput
 
-class Elasticsearch8Translator(QueryTranslator):
 
+class Elasticsearch8Translator(QueryTranslator):
     def translate(self, query: Dict[str, Any]) -> QueryOutput:
         """Translates UQL dict to Elasticsearch 8 query dict"""
         try:

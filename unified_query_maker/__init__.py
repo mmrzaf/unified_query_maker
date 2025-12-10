@@ -26,12 +26,10 @@ __all__ = [
     # Validation
     "validate_uql_schema",
     "validate_uql_semantics",
-
     # Models
     "UQLQuery",
     "OrderByItem",
     "WhereClause",
-
     # Translators
     "MySQLTranslator",
     "ElasticsearchTranslator",

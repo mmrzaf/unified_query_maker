@@ -3,8 +3,8 @@ from pydantic import ValidationError
 from unified_query_maker.translators.base import QueryTranslator
 from unified_query_maker.models import UQLQuery, QueryOutput
 
-class MongoDBTranslator(QueryTranslator):
 
+class MongoDBTranslator(QueryTranslator):
     def translate(self, query: Dict[str, Any]) -> QueryOutput:
         """Translates UQL dict to a MongoDB query filter document"""
         try:

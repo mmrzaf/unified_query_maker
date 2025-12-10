@@ -3,8 +3,8 @@ from pydantic import ValidationError
 from unified_query_maker.translators.base import QueryTranslator
 from unified_query_maker.models import UQLQuery, QueryOutput
 
-class Neo4jTranslator(QueryTranslator):
 
+class Neo4jTranslator(QueryTranslator):
     def translate(self, query: Dict[str, Any]) -> QueryOutput:
         """Translates UQL dict to a Neo4j Cypher query string"""
         try:
@@ -29,7 +29,9 @@ class Neo4jTranslator(QueryTranslator):
                 )
                 where_conditions.append(f"NOT ({must_not_conditions})")
 
-        where_clause = "WHERE " + " AND ".join(where_conditions) if where_conditions else ""
+        where_clause = (
+            "WHERE " + " AND ".join(where_conditions) if where_conditions else ""
+        )
 
         # Use 'select' fields to build the RETURN clause
         return_fields = [f"n.{field}" for field in parsed_query.select]
@@ -62,5 +64,7 @@ class Neo4jTranslator(QueryTranslator):
             # Prepends 'n.' to the field name
             return f"n.{field} {cypher_op} {formatted_value}"
         else:
-            formatted_value = f"'{op_value}'" if isinstance(op_value, str) else str(op_value)
+            formatted_value = (
+                f"'{op_value}'" if isinstance(op_value, str) else str(op_value)
+            )
             return f"n.{field} = {formatted_value}"

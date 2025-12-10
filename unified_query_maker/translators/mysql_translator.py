@@ -1,5 +1,6 @@
 from .base_sql import SQLTranslator
 
+
 class MySQLTranslator(SQLTranslator):
     """MySQL specific translator"""
 

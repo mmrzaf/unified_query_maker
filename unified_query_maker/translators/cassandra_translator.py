@@ -3,8 +3,8 @@ from pydantic import ValidationError
 from unified_query_maker.translators.base import QueryTranslator
 from unified_query_maker.models import UQLQuery, QueryOutput
 
-class CassandraTranslator(QueryTranslator):
 
+class CassandraTranslator(QueryTranslator):
     def translate(self, query: Dict[str, Any]) -> QueryOutput:
         """Translates UQL dict to a Cassandra Query Language (CQL) string"""
         try:
@@ -30,7 +30,9 @@ class CassandraTranslator(QueryTranslator):
                 # Note: Cassandra has limited NOT support. This may need refinement.
                 where_conditions.append(f"NOT ({must_not_conditions})")
 
-        where_clause = "WHERE " + " AND ".join(where_conditions) if where_conditions else ""
+        where_clause = (
+            "WHERE " + " AND ".join(where_conditions) if where_conditions else ""
+        )
 
         # Note: orderBy, limit, and offset are not implemented here.
         # Cassandra 'ORDER BY' requires specific clustering keys.
@@ -59,5 +61,7 @@ class CassandraTranslator(QueryTranslator):
             return f"{field} {cql_op} {formatted_value}"
         else:
             # Simple equality
-            formatted_value = f"'{op_value}'" if isinstance(op_value, str) else str(op_value)
+            formatted_value = (
+                f"'{op_value}'" if isinstance(op_value, str) else str(op_value)
+            )
             return f"{field} = {formatted_value}"

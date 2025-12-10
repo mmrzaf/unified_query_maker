@@ -3,8 +3,8 @@ from pydantic import ValidationError
 from unified_query_maker.translators.base import QueryTranslator
 from unified_query_maker.models import UQLQuery, QueryOutput
 
-class ElasticsearchTranslator(QueryTranslator):
 
+class ElasticsearchTranslator(QueryTranslator):
     def translate(self, query: Dict[str, Any]) -> QueryOutput:
         """Translates UQL dict to a base Elasticsearch query dict"""
         try:
@@ -38,7 +38,7 @@ class ElasticsearchTranslator(QueryTranslator):
                 "lt": "range",
                 "lte": "range",
                 "eq": "term",
-                "neq": "must_not", # Special case
+                "neq": "must_not",  # Special case
             }
             es_op = es_op_map.get(op, "term")
 

@@ -3,8 +3,8 @@ from pydantic import ValidationError
 from unified_query_maker.translators.base import QueryTranslator
 from unified_query_maker.models import UQLQuery, QueryOutput
 
-class OrientDBTranslator(QueryTranslator):
 
+class OrientDBTranslator(QueryTranslator):
     def translate(self, query: Dict[str, Any]) -> QueryOutput:
         """Translates UQL dict to an OrientDB SQL-like query string"""
         try:
@@ -29,7 +29,9 @@ class OrientDBTranslator(QueryTranslator):
                 )
                 where_conditions.append(f"NOT ({must_not_conditions})")
 
-        where_clause = "WHERE " + " AND ".join(where_conditions) if where_conditions else ""
+        where_clause = (
+            "WHERE " + " AND ".join(where_conditions) if where_conditions else ""
+        )
 
         # TODO: Add orderBy, limit, offset logic if needed
         # orderBy_clause = ...
@@ -56,5 +58,7 @@ class OrientDBTranslator(QueryTranslator):
             formatted_value = f"'{value}'" if isinstance(value, str) else str(value)
             return f"{field} {sql_op} {formatted_value}"
         else:
-            formatted_value = f"'{op_value}'" if isinstance(op_value, str) else str(op_value)
+            formatted_value = (
+                f"'{op_value}'" if isinstance(op_value, str) else str(op_value)
+            )
             return f"{field} = {formatted_value}"
