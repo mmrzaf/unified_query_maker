@@ -1,5 +1,5 @@
 from typing import List, Optional, Dict, Any, Literal, Union
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, constr
 
 # A simple value in a condition, e.g., "active", 30, true
 OperatorValue = Union[str, int, float, bool, None]
@@ -8,16 +8,19 @@ OperatorValue = Union[str, int, float, bool, None]
 Condition = Dict[str, Any]
 
 QueryOutput = Union[str, Dict[str, Any]]
+NonEmptyStr = constr(strip_whitespace=True, min_length=1)
 
 
 class OrderByItem(BaseModel):
     """Defines a single sorting criterion."""
+
     field: str
     order: Literal["ASC", "DESC"]
 
 
 class WhereClause(BaseModel):
     """Defines the 'where' block with 'must' and 'must_not' conditions."""
+
     must: Optional[List[Condition]] = None
     must_not: Optional[List[Condition]] = None
 
@@ -29,12 +32,13 @@ class UQLQuery(BaseModel):
     """
     The main Pydantic model for a Unified Query Language (UQL) query.
     """
-    select: List[str]
+
+    select: list[NonEmptyStr] | None = None
     # Use alias to allow 'from' in the JSON but 'from_table' in Python
     from_table: str = Field(..., alias="from")
     where: Optional[WhereClause] = None
     orderBy: Optional[List[OrderByItem]] = None
-    
+
     limit: Optional[int] = None
     offset: Optional[int] = None
 
