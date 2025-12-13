@@ -1,53 +1,44 @@
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List
 from pydantic import ValidationError
+
 from .base import QueryTranslator
-from unified_query_maker.models import UQLQuery, OrderByItem
+from unified_query_maker.models import UQLQuery
+from unified_query_maker.utils import parse_condition, validate_qualified_name
+
 
 class SQLTranslator(QueryTranslator):
-    """Base class for SQL-based translators with common functionality"""
+    """
+    Base class for SQL-like translators.
+    """
 
-    def translate(self, query: Dict[str, Any]) -> str:
-        """Translate unified query to SQL with dialect-specific customizations"""
-        # 1. Validate and parse the query using Pydantic
+    def translate(self, uql: Dict[str, Any]) -> str:
         try:
-            parsed_query = UQLQuery.model_validate(query)
+            query = UQLQuery.model_validate(uql)
         except ValidationError as e:
-            # Raise a clear error if validation fails
             raise ValueError(f"Invalid UQL query: {e}") from e
 
-        # 2. Build query parts using the strongly-typed model
-        select_clause = self._build_select_clause(parsed_query)
-        from_clause = self._build_from_clause(parsed_query)
-        where_clause = self._build_where_clause(parsed_query)
-        order_by_clause = self._build_order_by_clause(parsed_query)
-        limit_clause = self._build_limit_clause(parsed_query)
+        select = self._build_select_clause(query)
+        from_ = self._build_from_clause(query)
+        where = self._build_where_clause(query)
+        order_by = self._build_order_by_clause(query)
+        limit = self._build_limit_clause(query)
 
-        sql_parts: List[str] = [
-            select_clause,
-            from_clause,
-            where_clause,
-            order_by_clause,
-            limit_clause,
-        ]
-
-        sql_query = " ".join([part for part in sql_parts if part])
-        return f"{sql_query}{self._get_query_terminator()}"
+        parts = [select, from_, where, order_by, limit]
+        sql = " ".join(p for p in parts if p)
+        return sql.strip() + ";"
 
     def _build_select_clause(self, query: UQLQuery) -> str:
-        """Build the SELECT clause"""
-        if not query.select:
+        if not query.select or query.select == ["*"]:
             return "SELECT *"
-        fields = [self._escape_identifier(field) for field in query.select]
+
+        fields = [self._escape_column_name(field) for field in query.select]
         return f"SELECT {', '.join(fields)}"
 
     def _build_from_clause(self, query: UQLQuery) -> str:
-        """Build the FROM clause"""
-        # Pydantic validation already ensures 'from_table' (from 'from') exists
-        table_name = self._escape_identifier(query.from_table)
-        return f"FROM {table_name}"
+        table = self._escape_table_name(query.from_table)
+        return f"FROM {table}"
 
     def _build_where_clause(self, query: UQLQuery) -> str:
-        """Build the WHERE clause"""
         if not query.where:
             return ""
 
@@ -60,66 +51,55 @@ class SQLTranslator(QueryTranslator):
             where_conditions.append(f"({must_conditions})")
 
         if query.where.must_not:
+            # IMPORTANT: semantics = exclude each condition, not NOT(all-of-them)
             must_not_conditions = " AND ".join(
-                self._parse_condition(cond) for cond in query.where.must_not
+                f"NOT ({self._parse_condition(cond)})" for cond in query.where.must_not
             )
-            where_conditions.append(f"NOT ({must_not_conditions})")
+            where_conditions.append(f"({must_not_conditions})")
 
-        # Removed deprecated 'should', 'match', and 'range' logic [cite: 17, 82, 83, 84]
-        
         return "WHERE " + " AND ".join(where_conditions) if where_conditions else ""
 
     def _build_order_by_clause(self, query: UQLQuery) -> str:
-        """Build the ORDER BY clause"""
         if not query.orderBy:
             return ""
-
-        order_clauses: List[str] = []
+        clauses: List[str] = []
         for order_item in query.orderBy:
-            field = self._escape_identifier(order_item.field)
-            direction = order_item.order  # Already validated as "ASC" or "DESC"
-            order_clauses.append(f"{field} {direction}")
-
-        return f"ORDER BY {', '.join(order_clauses)}" if order_clauses else ""
+            field = self._escape_column_name(order_item.field)
+            clauses.append(f"{field} {order_item.order}")
+        return "ORDER BY " + ", ".join(clauses)
 
     def _build_limit_clause(self, query: UQLQuery) -> str:
-        """Build the LIMIT/OFFSET clause"""
-        if query.limit is None:
-            return ""
-
+        # Default SQL dialect: LIMIT then OFFSET
         limit = query.limit
-        offset = query.offset or 0  # Default to 0 if not provided
-
-        if offset > 0:
-            return self._build_limit_offset(limit, offset)
-        else:
+        offset = query.offset
+        if limit is None and (offset is None or offset == 0):
+            return ""
+        if limit is None:
+            # Some DBs allow OFFSET without LIMIT; if yours doesn't, override in dialect.
+            return f"OFFSET {offset}"
+        if offset is None or offset == 0:
             return f"LIMIT {limit}"
-
-    def _build_limit_offset(self, limit: int, offset: int) -> str:
-        """Build limit with offset - override in subclasses"""
         return f"LIMIT {limit} OFFSET {offset}"
 
     def _parse_condition(self, condition: Dict[str, Any]) -> str:
-        """Parse a single condition into SQL"""
-        # Assumes condition is a single-key dict like {"age": {"gt": 30}}
-        field, op_value = next(iter(condition.items()))
-        field = self._escape_identifier(field)
+        field, op, value = parse_condition(condition)
+        field_sql = self._escape_column_name(field)
 
-        if isinstance(op_value, dict):
-            op, value = next(iter(op_value.items()))
-            sql_op = self._map_operator(op)
-            formatted_value = self._format_value(value)
-            return f"{field} {sql_op} {formatted_value}"
-        else:
-            # Simple equality, e.g., {"status": "active"}
-            formatted_value = self._format_value(op_value)
-            return f"{field} = {formatted_value}"
+        # NULL semantics
+        if op == "eq" and value is None:
+            return f"{field_sql} IS NULL"
+        if op == "neq" and value is None:
+            return f"{field_sql} IS NOT NULL"
 
-    # Removed _build_match_condition and _build_range_condition
-    # as they were only used by deprecated 'where' clauses.
+        # unary ops
+        if op in ("exists", "nexists"):
+            return f"{field_sql} {self._map_operator(op)}"
+
+        sql_op = self._map_operator(op)
+        formatted_value = self._format_value(value)
+        return f"{field_sql} {sql_op} {formatted_value}"
 
     def _map_operator(self, op: str) -> str:
-        """Map UQL operators to SQL operators"""
         return {
             "eq": "=",
             "neq": "!=",
@@ -131,32 +111,42 @@ class SQLTranslator(QueryTranslator):
             "nin": "NOT IN",
             "exists": "IS NOT NULL",
             "nexists": "IS NULL",
-        }.get(op, "=") # Default to '='
+        }[op]
 
     def _format_value(self, value: Any) -> str:
-        """Format a value according to its type for SQL"""
         if value is None:
             return "NULL"
-        elif isinstance(value, bool):
-            return str(value).upper()  # TRUE or FALSE
-        elif isinstance(value, (int, float)):
+        if isinstance(value, bool):
+            return "TRUE" if value else "FALSE"
+        if isinstance(value, (int, float)):
             return str(value)
-        elif isinstance(value, list):
-            formatted_items = [self._format_value(item) for item in value]
-            return f"({', '.join(formatted_items)})"
-        else:
-            # String values need quotes and escaping
-            return f"'{self._escape_string(str(value))}'"
-
-    def _escape_string(self, value: str) -> str:
-        """Escape string values for SQL - override in subclasses"""
-        return value.replace("'", "''")
-
+        if isinstance(value, list):
+            return "(" + ", ".join(self._format_value(v) for v in value) + ")"
+        # string
+        s = str(value).replace("'", "''")
+        return f"'{s}'"
 
     def _escape_identifier(self, identifier: str) -> str:
-        """Escape identifiers (table/column names) - override in subclasses"""
-        return identifier  # Default: no escaping
+        """
+        Dialect override point: quoting style for a single identifier segment.
+        Default = no quoting.
+        """
+        return identifier
 
-    def _get_query_terminator(self) -> str:
-        """Get the SQL statement terminator"""
-        return ";"
+    def _escape_column_name(self, name: str) -> str:
+        raw = str(name).strip()
+        validate_qualified_name(raw, allow_star=False, allow_trailing_star=True)
+
+        if raw.endswith(".*"):
+            base = raw[:-2]
+            parts = [p.strip() for p in base.split(".") if p.strip()]
+            return ".".join(self._escape_identifier(p) for p in parts) + ".*"
+
+        parts = [p.strip() for p in raw.split(".") if p.strip()]
+        return ".".join(self._escape_identifier(p) for p in parts)
+
+    def _escape_table_name(self, name: str) -> str:
+        raw = str(name).strip()
+        validate_qualified_name(raw, allow_star=False, allow_trailing_star=False)
+        parts = [p.strip() for p in raw.split(".") if p.strip()]
+        return ".".join(self._escape_identifier(p) for p in parts)

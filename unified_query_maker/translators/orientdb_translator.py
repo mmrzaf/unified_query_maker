@@ -1,60 +1,96 @@
 from typing import Dict, Any, List
 from pydantic import ValidationError
 from unified_query_maker.translators.base import QueryTranslator
-from unified_query_maker.models import UQLQuery, QueryOutput
+from unified_query_maker.models import UQLQuery
+from unified_query_maker.utils import parse_condition, escape_single_quotes
+
 
 class OrientDBTranslator(QueryTranslator):
-
-    def translate(self, query: Dict[str, Any]) -> QueryOutput:
-        """Translates UQL dict to an OrientDB SQL-like query string"""
+    def translate(self, uql: Dict[str, Any]) -> str:
         try:
-            parsed_query = UQLQuery.model_validate(query)
+            parsed = UQLQuery.model_validate(uql)
         except ValidationError as e:
             raise ValueError(f"Invalid UQL query: {e}") from e
 
-        select_clause = f"SELECT {', '.join(parsed_query.select)}"
-        from_clause = f"FROM {parsed_query.from_table}"
+        select_fields = parsed.select or ["*"]
+        select_clause = (
+            "SELECT *"
+            if select_fields == ["*"]
+            else f"SELECT {', '.join(select_fields)}"
+        )
+        from_clause = f"FROM {parsed.from_table}"
 
         where_conditions: List[str] = []
-        if parsed_query.where:
-            if parsed_query.where.must:
+        if parsed.where:
+            if parsed.where.must:
                 must_conditions = " AND ".join(
-                    self._parse_condition(cond) for cond in parsed_query.where.must
+                    self._parse_condition(c) for c in parsed.where.must
                 )
                 where_conditions.append(f"({must_conditions})")
 
-            if parsed_query.where.must_not:
+            if parsed.where.must_not:
                 must_not_conditions = " AND ".join(
-                    self._parse_condition(cond) for cond in parsed_query.where.must_not
+                    f"NOT ({self._parse_condition(c)})" for c in parsed.where.must_not
                 )
-                where_conditions.append(f"NOT ({must_not_conditions})")
+                where_conditions.append(f"({must_not_conditions})")
 
-        where_clause = "WHERE " + " AND ".join(where_conditions) if where_conditions else ""
+        where_clause = (
+            "WHERE " + " AND ".join(where_conditions) if where_conditions else ""
+        )
 
-        # TODO: Add orderBy, limit, offset logic if needed
-        # orderBy_clause = ...
-        # limit_clause = ...
+        order_by_clause = ""
+        if parsed.orderBy:
+            order_by_clause = "ORDER BY " + ", ".join(
+                f"{i.field} {i.order}" for i in parsed.orderBy
+            )
 
-        return f"{select_clause} {from_clause} {where_clause};"
+        skip_clause = f"SKIP {parsed.offset}" if parsed.offset else ""
+        limit_clause = f"LIMIT {parsed.limit}" if parsed.limit is not None else ""
+
+        parts = [
+            select_clause,
+            from_clause,
+            where_clause,
+            order_by_clause,
+            skip_clause,
+            limit_clause,
+        ]
+        sql = " ".join(p for p in parts if p).strip()
+        return sql + ";"
 
     def _parse_condition(self, condition: Dict[str, Any]) -> str:
-        """Parses a single UQL condition into a SQL-like string fragment"""
-        field, op_value = next(iter(condition.items()))
+        field, op, value = parse_condition(condition)
 
-        if isinstance(op_value, dict):
-            op, value = next(iter(op_value.items()))
-            sql_op_map = {
-                "gt": ">",
-                "gte": ">=",
-                "lt": "<",
-                "lte": "<=",
-                "eq": "=",
-                "neq": "!=",
-            }
-            sql_op = sql_op_map.get(op, "=")
+        def fmt(v: Any) -> str:
+            if v is None:
+                return "NULL"
+            if isinstance(v, bool):
+                return "true" if v else "false"
+            if isinstance(v, (int, float)):
+                return str(v)
+            if isinstance(v, list):
+                return "(" + ", ".join(fmt(x) for x in v) + ")"
+            return f"'{escape_single_quotes(str(v))}'"
 
-            formatted_value = f"'{value}'" if isinstance(value, str) else str(value)
-            return f"{field} {sql_op} {formatted_value}"
-        else:
-            formatted_value = f"'{op_value}'" if isinstance(op_value, str) else str(op_value)
-            return f"{field} = {formatted_value}"
+        if op == "eq" and value is None:
+            return f"{field} IS NULL"
+        if op == "neq" and value is None:
+            return f"{field} IS NOT NULL"
+        if op == "exists":
+            return f"{field} IS NOT NULL"
+        if op == "nexists":
+            return f"{field} IS NULL"
+        if op == "in":
+            return f"{field} IN {fmt(value)}"
+        if op == "nin":
+            return f"{field} NOT IN {fmt(value)}"
+
+        op_map = {
+            "gt": ">",
+            "gte": ">=",
+            "lt": "<",
+            "lte": "<=",
+            "eq": "=",
+            "neq": "!=",
+        }
+        return f"{field} {op_map[op]} {fmt(value)}"

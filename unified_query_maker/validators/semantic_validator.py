@@ -1,19 +1,26 @@
 from unified_query_maker.models import UQLQuery
+from unified_query_maker.utils import parse_condition
+
 
 def validate_uql_semantics(uql: UQLQuery) -> bool:
     """
-    Performs semantic validation on a *parsed* UQL query.
-    (e.g., check if fields in 'select' exist in 'from_table')
-    
-    This is a stub implementation.
-    
-    Args:
-        uql: A validated UQLQuery model instance.
-        
+    Backend-agnostic semantic validation (structure + operator sanity).
+
     Returns:
         True if semantically valid, else False.
     """
-    # Placeholder for future logic, e.g.:
-    # check_field_existance(uql.select, uql.from_table)
-    pass
-    return True
+    try:
+        if uql.where:
+            for cond in uql.where.must or []:
+                parse_condition(cond)
+            for cond in uql.where.must_not or []:
+                parse_condition(cond)
+
+        if uql.limit is not None and uql.limit < 0:
+            return False
+        if uql.offset is not None and uql.offset < 0:
+            return False
+
+        return True
+    except ValueError:
+        return False

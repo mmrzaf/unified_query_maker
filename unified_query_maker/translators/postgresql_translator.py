@@ -1,5 +1,6 @@
 from .base_sql import SQLTranslator
 
+
 class PostgreSQLTranslator(SQLTranslator):
     """PostgreSQL specific translator"""
 

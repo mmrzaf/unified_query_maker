@@ -1,44 +1,74 @@
 from typing import List, Optional, Dict, Any, Literal, Union
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, constr, field_validator
+from unified_query_maker.utils import validate_qualified_name
 
-# A simple value in a condition, e.g., "active", 30, true
 OperatorValue = Union[str, int, float, bool, None]
-
-# A condition, e.g., {"age": {"gt": 30}} or {"status": "active"}
-Condition = Dict[str, Any]
-
-QueryOutput = Union[str, Dict[str, Any]]
+NonEmptyStr = constr(min_length=1)
 
 
 class OrderByItem(BaseModel):
-    """Defines a single sorting criterion."""
     field: str
     order: Literal["ASC", "DESC"]
 
+    @field_validator("field")
+    @classmethod
+    def _validate_order_field(cls, v: str) -> str:
+        return validate_qualified_name(v, allow_star=False, allow_trailing_star=False)
+
 
 class WhereClause(BaseModel):
-    """Defines the 'where' block with 'must' and 'must_not' conditions."""
-    must: Optional[List[Condition]] = None
-    must_not: Optional[List[Condition]] = None
-
-    # Forbid extra fields like 'should' or 'match'
-    model_config = ConfigDict(extra="forbid")
+    must: Optional[List[Dict[str, Any]]] = None
+    must_not: Optional[List[Dict[str, Any]]] = None
 
 
 class UQLQuery(BaseModel):
     """
-    The main Pydantic model for a Unified Query Language (UQL) query.
+    Unified Query Language (UQL) query model.
     """
-    select: List[str]
-    # Use alias to allow 'from' in the JSON but 'from_table' in Python
-    from_table: str = Field(..., alias="from")
+
+    select: list[NonEmptyStr] | None = None
+    from_table: NonEmptyStr = Field(..., alias="from")
     where: Optional[WhereClause] = None
     orderBy: Optional[List[OrderByItem]] = None
-    
-    limit: Optional[int] = None
-    offset: Optional[int] = None
+
+    limit: Optional[int] = Field(default=None, ge=0)
+    offset: Optional[int] = Field(default=None, ge=0)
 
     model_config = ConfigDict(
         populate_by_name=True,
         extra="forbid",
     )
+
+    @field_validator("from_table")
+    @classmethod
+    def _validate_from_table(cls, v: str) -> str:
+        # Allow qualified table names like schema.table
+        return validate_qualified_name(v, allow_star=False, allow_trailing_star=False)
+
+    @field_validator("select")
+    @classmethod
+    def _validate_select(cls, v: Optional[list[str]]) -> Optional[list[str]]:
+        if v is None:
+            return v
+
+        cleaned: list[str] = []
+        for item in v:
+            item_s = str(item).strip()
+            if item_s == "*":
+                cleaned.append("*")
+            else:
+                cleaned.append(
+                    validate_qualified_name(
+                        item_s, allow_star=False, allow_trailing_star=True
+                    )
+                )
+
+        # Don't allow mixing "*" with other fields
+        if "*" in cleaned and len(cleaned) > 1:
+            raise ValueError("select cannot mix '*' with other fields")
+
+        return cleaned
+
+
+# Keep compatibility if your code imports QueryOutput
+QueryOutput = Any

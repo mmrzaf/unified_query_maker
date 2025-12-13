@@ -1,57 +1,58 @@
-from typing import Dict, Any, List
+from typing import Dict, Any
 from pydantic import ValidationError
 from unified_query_maker.translators.base import QueryTranslator
-from unified_query_maker.models import UQLQuery, QueryOutput
+from unified_query_maker.models import UQLQuery
+from unified_query_maker.utils import parse_condition
 
-class MongoDBTranslator(QueryTranslator):
 
-    def translate(self, query: Dict[str, Any]) -> QueryOutput:
-        """Translates UQL dict to a MongoDB query filter document"""
+class Elasticsearch7Translator(QueryTranslator):
+    def translate(self, uql: Dict[str, Any]) -> Dict[str, Any]:
         try:
-            parsed_query = UQLQuery.model_validate(query)
+            parsed = UQLQuery.model_validate(uql)
         except ValidationError as e:
             raise ValueError(f"Invalid UQL query: {e}") from e
 
-        mongo_query: Dict[str, List[Dict[str, Any]]] = {}
+        es_bool: Dict[str, Any] = {}
 
-        if parsed_query.where:
-            if parsed_query.where.must:
-                mongo_query["$and"] = [
-                    self._parse_condition(cond) for cond in parsed_query.where.must
+        if parsed.where:
+            if parsed.where.must:
+                es_bool["must"] = [self._parse_condition(c) for c in parsed.where.must]
+            if parsed.where.must_not:
+                es_bool["must_not"] = [
+                    self._parse_condition(c) for c in parsed.where.must_not
                 ]
 
-            if parsed_query.where.must_not:
-                mongo_query["$nor"] = [
-                    self._parse_condition(cond) for cond in parsed_query.where.must_not
-                ]
+        out: Dict[str, Any] = {"query": {"bool": es_bool}}
 
-        # This only returns the filter document.
-        # In a real application, you'd use other parts of the query:
-        # projection = {field: 1 for field in parsed_query.select}
-        # sort_list = [(item.field, 1 if item.order == "ASC" else -1) for item in parsed_query.orderBy or []]
-        # limit_val = parsed_query.limit
-        # skip_val = parsed_query.offset
+        if parsed.select and parsed.select != ["*"]:
+            out["_source"] = parsed.select
+        if parsed.orderBy:
+            out["sort"] = [
+                {item.field: {"order": item.order.lower()}} for item in parsed.orderBy
+            ]
+        if parsed.limit is not None:
+            out["size"] = parsed.limit
+        if parsed.offset is not None:
+            out["from"] = parsed.offset
 
-        # db.collection.find(mongo_query, projection).sort(sort_list).skip(skip_val).limit(limit_val)
-
-        return mongo_query
+        return out
 
     def _parse_condition(self, condition: Dict[str, Any]) -> Dict[str, Any]:
-        """Parses a single UQL condition into a MongoDB condition dict"""
-        field, op_value = next(iter(condition.items()))
+        field, op, value = parse_condition(condition)
 
-        if isinstance(op_value, dict):
-            op, value = next(iter(op_value.items()))
-            mongo_op_map = {
-                "gt": "$gt",
-                "gte": "$gte",
-                "lt": "$lt",
-                "lte": "$lte",
-                "eq": "$eq",
-                "neq": "$ne",
-            }
-            mongo_op = mongo_op_map.get(op, "$eq")
-            return {field: {mongo_op: value}}
-        else:
-            # Simple equality, e.g., {"status": "active"}
-            return {field: op_value}
+        if op in ("gt", "gte", "lt", "lte"):
+            return {"range": {field: {op: value}}}
+        if op == "eq":
+            return {"term": {field: value}}
+        if op == "neq":
+            return {"bool": {"must_not": [{"term": {field: value}}]}}
+        if op == "in":
+            return {"terms": {field: value}}
+        if op == "nin":
+            return {"bool": {"must_not": [{"terms": {field: value}}]}}
+        if op == "exists":
+            return {"exists": {"field": field}}
+        if op == "nexists":
+            return {"bool": {"must_not": [{"exists": {"field": field}}]}}
+
+        return {"term": {field: value}}
