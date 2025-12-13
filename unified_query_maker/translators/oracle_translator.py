@@ -29,4 +29,3 @@ class OracleTranslator(SQLTranslator):
             return f"FETCH FIRST {limit} ROWS ONLY"
         # offset only
         return f"OFFSET {offset} ROWS"
-
