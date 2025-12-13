@@ -5,19 +5,15 @@ from unified_query_maker.models import UQLQuery
 
 def validate_uql_schema(uql: Dict[str, Any]) -> Optional[UQLQuery]:
     """
-    Validates the UQL query schema using Pydantic models.
+    Validates the given raw UQL dict against the Pydantic model schema.
 
     Args:
-        uql: The raw UQL query dictionary.
+        uql: Raw dict of the UQL query.
 
     Returns:
         A parsed UQLQuery model instance if valid, else None.
     """
-    print("_" * 64)
-    print(uql)
-    print("_" * 64)
     try:
         return UQLQuery.model_validate(uql)
-    except ValidationError as ve:
-        print(f"Schema validation error: {ve}")
+    except ValidationError:
         return None
