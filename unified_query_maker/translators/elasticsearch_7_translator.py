@@ -1,12 +1,63 @@
+from typing import Any, Dict, List, Union
+
 from pydantic import ValidationError
-from typing import Dict, Any, List
-from unified_query_maker.translators.base import QueryTranslator
+
 from unified_query_maker.models import UQLQuery, QueryOutput
+from unified_query_maker.models.where_model import (
+    AndExpression,
+    Condition,
+    FilterExpression,
+    FilterVisitor,
+    NotExpression,
+    Operator,
+    OrExpression,
+)
+from unified_query_maker.translators.base import QueryTranslator
+from unified_query_maker.utils import parse_condition
+
+
+class _ES7ConditionTranslator(FilterVisitor):
+    def visit_condition(self, condition: Condition) -> Dict[str, Any]:
+        field = condition.field
+        op = condition.operator
+        value = condition.value
+
+        if op in (Operator.GT, Operator.GTE, Operator.LT, Operator.LTE):
+            return {"range": {field: {op.value: value}}}
+
+        if op == Operator.EXISTS:
+            return {"exists": {"field": field}}
+        if op == Operator.NEXISTS:
+            return {"bool": {"must_not": [{"exists": {"field": field}}]}}
+
+        if op == Operator.IN:
+            return {"terms": {field: value}}
+        if op == Operator.NIN:
+            return {"bool": {"must_not": [{"terms": {field: value}}]}}
+
+        if op == Operator.NEQ:
+            return {"bool": {"must_not": [{"term": {field: value}}]}}
+
+        # default eq / term
+        return {"term": {field: value}}
+
+    def visit_and(self, and_expr: AndExpression) -> Dict[str, Any]:
+        return {"bool": {"must": [e.accept(self) for e in and_expr.expressions]}}
+
+    def visit_or(self, or_expr: OrExpression) -> Dict[str, Any]:
+        return {
+            "bool": {
+                "should": [e.accept(self) for e in or_expr.expressions],
+                "minimum_should_match": 1,
+            }
+        }
+
+    def visit_not(self, not_expr: NotExpression) -> Dict[str, Any]:
+        return {"bool": {"must_not": [not_expr.expression.accept(self)]}}
 
 
 class Elasticsearch7Translator(QueryTranslator):
     def translate(self, query: Dict[str, Any]) -> QueryOutput:
-        """Translates UQL dict to Elasticsearch 7 query dict"""
         try:
             parsed_query = UQLQuery.model_validate(query)
         except ValidationError as e:
@@ -17,47 +68,21 @@ class Elasticsearch7Translator(QueryTranslator):
         if parsed_query.where:
             if parsed_query.where.must:
                 es_bool["must"] = [
-                    self._parse_condition(cond) for cond in parsed_query.where.must
+                    self._parse_condition(c) for c in parsed_query.where.must
                 ]
             if parsed_query.where.must_not:
                 es_bool["must_not"] = [
-                    self._parse_condition(cond) for cond in parsed_query.where.must_not
+                    self._parse_condition(c) for c in parsed_query.where.must_not
                 ]
-
-        # Note: 'select', 'orderBy', 'limit', 'offset' from UQL
-        # are not translated here, as they are typically handled
-        # at a different level in Elasticsearch (e.g., _source, sort)
 
         return {"query": {"bool": es_bool}}
 
-    def _parse_condition(self, condition: Dict[str, Any]) -> Dict[str, Any]:
-        """Parses a single UQL condition into an ES condition dict"""
-        field, op_value = next(iter(condition.items()))
+    def _parse_condition(
+        self, condition: Union[Dict[str, Any], FilterExpression]
+    ) -> Dict[str, Any]:
+        if isinstance(condition, FilterExpression):
+            return condition.accept(_ES7ConditionTranslator())
 
-        if isinstance(op_value, dict):
-            op, value = next(iter(op_value.items()))
-            # Map UQL ops to ES ops
-            es_op_map = {
-                "gt": "gt",
-                "gte": "gte",
-                "lt": "lt",
-                "lte": "lte",
-            }
-
-            if op in es_op_map:
-                return {"range": {field: {es_op_map[op]: value}}}
-            elif op == "eq":
-                return {"term": {field: value}}
-            elif op == "neq":
-                # This would be a 'must_not' at the parent level,
-                # but for simplicity, we map it to ES 'must_not' within 'bool'.
-                # A better approach might be to not have 'neq' and
-                # just use the top-level 'must_not'.
-                # For this refactor, we keep the original logic.
-                return {"bool": {"must_not": {"term": {field: value}}}}
-
-            # Default to term query for unknown ops
-            return {"term": {field: op_value}}
-        else:
-            # Simple equality, e.g., {"status": "active"}
-            return {"term": {field: op_value}}
+        field, op, value = parse_condition(condition)
+        typed = Condition(field=field, operator=Operator(op), value=value)
+        return typed.accept(_ES7ConditionTranslator())
