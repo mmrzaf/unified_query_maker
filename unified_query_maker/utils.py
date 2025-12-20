@@ -1,13 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, Tuple, List
-
-# Strict-ish identifier safety:
-#   - segment:   [A-Za-z_][A-Za-z0-9_]*
-#   - qualified: seg(.seg)*
-#   - star:      "*" or "seg.*"
-_IDENT_SEG_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+from typing import Any, Dict, Tuple
 
 ALLOWED_OPS = {
     "eq",
@@ -20,105 +14,94 @@ ALLOWED_OPS = {
     "nin",
     "exists",
     "nexists",
+    # extended
+    "between",
+    "contains",
+    "ncontains",
+    "icontains",
+    "starts_with",
+    "ends_with",
+    "ilike",
+    "regex",
+    "array_contains",
+    "array_overlap",
+    "array_contained",
+    "geo_within",
+    "geo_intersects",
 }
 
 
-def _is_ident_segment(seg: str) -> bool:
-    return bool(_IDENT_SEG_RE.match(seg))
+def escape_single_quotes(s: str) -> str:
+    return s.replace("'", "''")
 
 
 def validate_qualified_name(
-    name: str,
-    *,
-    allow_star: bool = False,
-    allow_trailing_star: bool = False,
-) -> str:
+    name: str, *, allow_star: bool, allow_trailing_star: bool
+) -> None:
     """
-    Validates a safe identifier or qualified identifier.
+    Valid identifiers: letters, digits, underscore; segments separated by dots.
 
-    Examples:
-      - "users"
-      - "schema.users"
-      - "users.id"
-      - "*" (if allow_star)
-      - "users.*" (if allow_trailing_star)
+    allow_star:
+      - allow the entire name to be '*'
+
+    allow_trailing_star:
+      - allow 'segment.*' (ONLY trailing)
     """
-    if name is None:
-        raise ValueError("Name cannot be None")
-
     raw = str(name).strip()
-    if not raw:
-        raise ValueError("Name cannot be empty")
-
     if raw == "*":
         if allow_star:
-            return raw
+            return
         raise ValueError("'*' is not allowed here")
 
+    if allow_trailing_star and raw.endswith(".*"):
+        base = raw[:-2]
+        if not base:
+            raise ValueError("Invalid qualified name")
+        parts = base.split(".")
+        for p in parts:
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", p):
+                raise ValueError(f"Invalid identifier segment: {p}")
+        return
+
     parts = raw.split(".")
-    if any(p == "" for p in parts):
-        raise ValueError(f"Invalid qualified name: {raw!r}")
-
-    for i, p in enumerate(parts):
-        if p == "*":
-            if allow_trailing_star and i == len(parts) - 1 and len(parts) > 1:
-                continue
-            raise ValueError(f"Invalid '*' placement in name: {raw!r}")
-        if not _is_ident_segment(p):
-            raise ValueError(f"Unsafe identifier segment {p!r} in {raw!r}")
-
-    return raw
+    for p in parts:
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", p):
+            raise ValueError(f"Invalid identifier segment: {p}")
 
 
 def parse_condition(condition: Dict[str, Any]) -> Tuple[str, str, Any]:
     """
-    Normalizes a single condition dict to (field, op, value) with validation.
+    Parse legacy dict condition formats:
 
-    Accepts:
-      {"status": "active"}             -> ("status", "eq", "active")
-      {"age": {"gt": 30}}              -> ("age", "gt", 30)
-      {"tags": {"in": ["a", "b"]}}     -> ("tags", "in", ["a", "b"])
-      {"deleted_at": {"exists": true}} -> ("deleted_at", "exists", True)
+      {"status": "active"}       -> ("status", "eq", "active")
+      {"age": {"gt": 30}}        -> ("age", "gt", 30)
+      {"field": {"exists": true}}-> ("field","exists",True)
     """
-    if not isinstance(condition, dict) or len(condition) != 1:
-        raise ValueError(f"Condition must be a single-key object, got: {condition!r}")
+    if not isinstance(condition, dict) or not condition:
+        raise ValueError("Condition must be a non-empty object")
+
+    if len(condition) != 1:
+        raise ValueError("Legacy condition objects must have exactly one field key")
 
     field, op_value = next(iter(condition.items()))
-    field = validate_qualified_name(field, allow_star=False, allow_trailing_star=False)
+    validate_qualified_name(
+        str(field).strip(), allow_star=False, allow_trailing_star=False
+    )
 
-    if isinstance(op_value, dict):
-        if len(op_value) != 1:
-            raise ValueError(f"Operator object must be single-key, got: {op_value!r}")
-        op, value = next(iter(op_value.items()))
-    else:
-        op, value = "eq", op_value
+    # {"field": value} -> eq
+    if not isinstance(op_value, dict):
+        op = "eq"
+        value = op_value
+        if op not in ALLOWED_OPS:
+            raise ValueError(f"Operator {op} is not allowed")
+        return field, op, value
 
+    # {"field": {"op": value}}
+    if len(op_value) != 1:
+        raise ValueError("Operator object must have exactly one operator")
+
+    op, value = next(iter(op_value.items()))
     if op not in ALLOWED_OPS:
-        raise ValueError(f"Unsupported operator {op!r}. Allowed: {sorted(ALLOWED_OPS)}")
-
-    if op in ("in", "nin"):
-        if not isinstance(value, list):
-            raise ValueError(
-                f"Operator {op!r} requires a list value, got: {type(value).__name__}"
-            )
-        if len(value) == 0:
-            raise ValueError(f"Operator {op!r} requires a non-empty list")
-
-    if op in ("exists", "nexists"):
-        # translators treat these as unary; value is allowed but ignored
-        if value not in (True, False, None):
-            raise ValueError(
-                f"Operator {op!r} requires a boolean-ish value, got: {value!r}"
-            )
+        raise ValueError(f"Operator {op} is not allowed")
 
     return field, op, value
-
-
-def escape_single_quotes(value: str) -> str:
-    """Best-effort single-quote escape for string-literal contexts."""
-    return value.replace("'", "''")
-
-
-def format_list_sql(values: List[Any], fmt_item) -> str:
-    """Formats a list as '(a, b, c)' for SQL-like syntaxes."""
-    return "(" + ", ".join(fmt_item(v) for v in values) + ")"
