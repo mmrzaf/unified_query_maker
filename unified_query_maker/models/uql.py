@@ -83,12 +83,15 @@ class UQLQuery(BaseModel):
         """
         Convenience:
         - If user passes a single expression (typed or legacy dict), wrap it into {"must":[...]}.
+        - If user passes a WhereClause instance, accept it as-is.
         """
         if v is None:
             return None
 
+        if isinstance(v, WhereClause):
+            return v
+
         if isinstance(v, dict) and ("must" in v or "must_not" in v):
             return v
 
-        # Single expression (typed or legacy)
         return {"must": [normalize_filter_expression(v)]}

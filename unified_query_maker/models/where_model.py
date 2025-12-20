@@ -1,10 +1,10 @@
 from __future__ import annotations
-from bokeh.core.property.any import Any
 
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from datetime import date, datetime
 from enum import Enum
-from typing import Annotated, Generic, Literal, Optional, TypeVar
+from typing import Annotated, Any, Generic, Literal, Optional, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
@@ -256,13 +256,22 @@ def normalize_filter_expression(value: Any) -> Any:
     if "type" in value:
         return value
 
-    # Shorthand boolean nodes
+    # Shorthand boolean nodes - recursively normalize children
     if "and" in value:
-        return {"type": "and", "expressions": value["and"]}
+        return {
+            "type": "and",
+            "expressions": [normalize_filter_expression(v) for v in value["and"]],
+        }
     if "or" in value:
-        return {"type": "or", "expressions": value["or"]}
+        return {
+            "type": "or",
+            "expressions": [normalize_filter_expression(v) for v in value["or"]],
+        }
     if "not" in value:
-        return {"type": "not", "expression": value["not"]}
+        return {
+            "type": "not",
+            "expression": normalize_filter_expression(value["not"]),
+        }
 
     # Explicit condition form: {"field": "...", "operator": "...", "value": ...}
     if "field" in value and ("operator" in value or "op" in value):
@@ -309,7 +318,7 @@ class FieldRef:
         self.name = name
         self.field_type = field_type
 
-    def eq(self, value: Value) -> Condition:
+    def eq(self, value: JsonValue) -> Condition:
         return Condition(
             field=self.name,
             operator=Operator.EQ,
@@ -317,7 +326,7 @@ class FieldRef:
             field_type=self.field_type,
         )
 
-    def neq(self, value: Value) -> Condition:
+    def neq(self, value: JsonValue) -> Condition:
         return Condition(
             field=self.name,
             operator=Operator.NEQ,
@@ -325,7 +334,7 @@ class FieldRef:
             field_type=self.field_type,
         )
 
-    def gt(self, value: Value) -> Condition:
+    def gt(self, value: JsonValue) -> Condition:
         return Condition(
             field=self.name,
             operator=Operator.GT,
@@ -333,7 +342,7 @@ class FieldRef:
             field_type=self.field_type,
         )
 
-    def gte(self, value: Value) -> Condition:
+    def gte(self, value: JsonValue) -> Condition:
         return Condition(
             field=self.name,
             operator=Operator.GTE,
@@ -341,7 +350,7 @@ class FieldRef:
             field_type=self.field_type,
         )
 
-    def lt(self, value: Value) -> Condition:
+    def lt(self, value: JsonValue) -> Condition:
         return Condition(
             field=self.name,
             operator=Operator.LT,
@@ -349,7 +358,7 @@ class FieldRef:
             field_type=self.field_type,
         )
 
-    def lte(self, value: Value) -> Condition:
+    def lte(self, value: JsonValue) -> Condition:
         return Condition(
             field=self.name,
             operator=Operator.LTE,
@@ -357,7 +366,7 @@ class FieldRef:
             field_type=self.field_type,
         )
 
-    def in_(self, values: Sequence[Value]) -> Condition:
+    def in_(self, values: Sequence[JsonValue]) -> Condition:
         return Condition(
             field=self.name,
             operator=Operator.IN,
@@ -365,7 +374,7 @@ class FieldRef:
             field_type=self.field_type,
         )
 
-    def nin(self, values: Sequence[Value]) -> Condition:
+    def nin(self, values: Sequence[JsonValue]) -> Condition:
         return Condition(
             field=self.name,
             operator=Operator.NIN,
@@ -389,7 +398,7 @@ class FieldRef:
             field_type=self.field_type,
         )
 
-    def between(self, min_val: Value, max_val: Value) -> Condition:
+    def between(self, min_val: JsonValue, max_val: JsonValue) -> Condition:
         return Condition(
             field=self.name,
             operator=Operator.BETWEEN,
