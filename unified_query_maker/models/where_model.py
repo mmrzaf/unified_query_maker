@@ -8,7 +8,7 @@ from typing import Annotated, Any, Generic, Literal, Optional, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
-from unified_query_maker.utils import parse_condition, validate_qualified_name
+from unified_query_maker.utils import validate_qualified_name
 
 
 def _jsonify_dates(value: object) -> object:
@@ -27,7 +27,7 @@ def _jsonify_dates(value: object) -> object:
     if isinstance(value, list):
         return [_jsonify_dates(v) for v in value]
     if isinstance(value, dict):
-        # JsonValue requires string keys; enforce that early.
+        # JsonValue requires string keys; enforce early.
         out: dict[str, object] = {}
         for k, v in value.items():
             if not isinstance(k, str):
@@ -38,6 +38,10 @@ def _jsonify_dates(value: object) -> object:
 
 
 class FieldType(str, Enum):
+    """
+    Optional hint (not required). Keep only if you plan type-aware translation later.
+    """
+
     STRING = "string"
     NUMBER = "number"
     BOOLEAN = "boolean"
@@ -105,7 +109,7 @@ class FilterVisitor(ABC, Generic[R]):
 class FilterExpression(BaseModel):
     """
     Base class for filter AST nodes.
-    Kept as a real runtime base class so existing `isinstance(x, FilterExpression)` checks keep working.
+    Single approach: every node MUST be typed via the 'type' discriminator.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -115,7 +119,7 @@ class FilterExpression(BaseModel):
     def accept(self, visitor: FilterVisitor[R]) -> R:
         raise NotImplementedError("Subclasses must implement accept()")
 
-    # Fluent composition (kept)
+    # Fluent composition
     def __and__(self, other: "FilterExpressionModel") -> "AndExpression":
         return AndExpression(expressions=[self, other])  # type: ignore[arg-type]
 
@@ -137,7 +141,7 @@ class Condition(FilterExpression):
     @model_validator(mode="before")
     @classmethod
     def _normalize_value(cls, data: object) -> object:
-        # Ensure date/datetime work even when nested (e.g., between=[date1, date2])
+        # Allow Python callers to use date/datetime; store as ISO strings for JSON portability.
         if isinstance(data, dict) and "value" in data:
             copied = dict(data)
             copied["value"] = _jsonify_dates(copied.get("value"))
@@ -156,24 +160,19 @@ class Condition(FilterExpression):
             self.value = None
             return self
 
-        # IN/NIN must be list-like
-        if op in (
-            Operator.IN,
-            Operator.NIN,
-            Operator.ARRAY_OVERLAP,
-            Operator.ARRAY_CONTAINED,
-        ):
+        # IN/NIN: list required
+        if op in (Operator.IN, Operator.NIN):
             if not isinstance(v, list):
                 raise ValueError(f"Operator '{op}' requires a list value")
             return self
 
-        # BETWEEN must be 2-item list
+        # BETWEEN: 2-item list required
         if op == Operator.BETWEEN:
             if not isinstance(v, list) or len(v) != 2:
                 raise ValueError("Operator 'between' requires a 2-item list value")
             return self
 
-        # String ops require string
+        # String ops: string required
         if op in (
             Operator.CONTAINS,
             Operator.NCONTAINS,
@@ -187,11 +186,22 @@ class Condition(FilterExpression):
                 raise ValueError(f"Operator '{op}' requires a string value")
             return self
 
-        # Array contains: allow scalar or list (backend-dependent)
+        # Array ops:
+        # - array_contains: scalar membership (element-in-array)
+        # - array_overlap / array_contained: list required
         if op == Operator.ARRAY_CONTAINS:
+            if isinstance(v, list) or isinstance(v, dict):
+                raise ValueError(
+                    "Operator 'array_contains' requires a scalar JSON value"
+                )
             return self
 
-        # Geo expects object/dict
+        if op in (Operator.ARRAY_OVERLAP, Operator.ARRAY_CONTAINED):
+            if not isinstance(v, list):
+                raise ValueError(f"Operator '{op}' requires a list value")
+            return self
+
+        # Geo: dict required
         if op in (Operator.GEO_WITHIN, Operator.GEO_INTERSECTS):
             if not isinstance(v, dict):
                 raise ValueError(f"Operator '{op}' requires an object/dict value")
@@ -233,67 +243,9 @@ FilterExpressionModel = Annotated[
 ]
 
 
-def normalize_filter_expression(value: Any) -> Any:
-    """
-    Normalizes legacy dict conditions and shorthand boolean nodes into typed AST dicts.
-
-    Accepted legacy condition formats:
-      - {"status": "active"} -> Condition(field="status", operator="eq", value="active")
-      - {"age": {"gt": 30}}  -> Condition(field="age", operator="gt", value=30)
-
-    Accepted shorthand boolean formats:
-      - {"and": [ ... ]} -> {"type":"and","expressions":[...]}
-      - {"or":  [ ... ]} -> {"type":"or","expressions":[...]}
-      - {"not": { ... }} -> {"type":"not","expression":{...}}
-    """
-    if isinstance(value, FilterExpression):
-        return value
-
-    if not isinstance(value, dict):
-        raise TypeError("Filter expression must be an object")
-
-    # Already typed
-    if "type" in value:
-        return value
-
-    # Shorthand boolean nodes - recursively normalize children
-    if "and" in value:
-        return {
-            "type": "and",
-            "expressions": [normalize_filter_expression(v) for v in value["and"]],
-        }
-    if "or" in value:
-        return {
-            "type": "or",
-            "expressions": [normalize_filter_expression(v) for v in value["or"]],
-        }
-    if "not" in value:
-        return {
-            "type": "not",
-            "expression": normalize_filter_expression(value["not"]),
-        }
-
-    # Explicit condition form: {"field": "...", "operator": "...", "value": ...}
-    if "field" in value and ("operator" in value or "op" in value):
-        op_key = "operator" if "operator" in value else "op"
-        out = {
-            "type": "condition",
-            "field": value["field"],
-            "operator": value[op_key],
-            "value": value.get("value"),
-        }
-        if "field_type" in value:
-            out["field_type"] = value["field_type"]
-        return out
-
-    # Legacy dict condition: {"field": {...}} or {"field": value}
-    field, op, v = parse_condition(value)
-    return {"type": "condition", "field": field, "operator": op, "value": v}
-
-
 class Where:
     """
-    Fluent builder (kept). Produces typed FilterExpression nodes.
+    Fluent builder (kept). Produces typed FilterExpression nodes only.
     """
 
     @staticmethod
@@ -318,6 +270,7 @@ class FieldRef:
         self.name = name
         self.field_type = field_type
 
+    # comparisons
     def eq(self, value: JsonValue) -> Condition:
         return Condition(
             field=self.name,
@@ -366,6 +319,7 @@ class FieldRef:
             field_type=self.field_type,
         )
 
+    # membership / existence
     def in_(self, values: Sequence[JsonValue]) -> Condition:
         return Condition(
             field=self.name,
@@ -398,6 +352,7 @@ class FieldRef:
             field_type=self.field_type,
         )
 
+    # range / strings
     def between(self, min_val: JsonValue, max_val: JsonValue) -> Condition:
         return Condition(
             field=self.name,
@@ -410,6 +365,22 @@ class FieldRef:
         return Condition(
             field=self.name,
             operator=Operator.CONTAINS,
+            value=value,
+            field_type=self.field_type,
+        )
+
+    def ncontains(self, value: str) -> Condition:
+        return Condition(
+            field=self.name,
+            operator=Operator.NCONTAINS,
+            value=value,
+            field_type=self.field_type,
+        )
+
+    def icontains(self, value: str) -> Condition:
+        return Condition(
+            field=self.name,
+            operator=Operator.ICONTAINS,
             value=value,
             field_type=self.field_type,
         )
@@ -430,10 +401,60 @@ class FieldRef:
             field_type=self.field_type,
         )
 
+    def ilike(self, pattern: str) -> Condition:
+        return Condition(
+            field=self.name,
+            operator=Operator.ILIKE,
+            value=pattern,
+            field_type=self.field_type,
+        )
+
     def regex(self, pattern: str) -> Condition:
         return Condition(
             field=self.name,
             operator=Operator.REGEX,
             value=pattern,
+            field_type=self.field_type,
+        )
+
+    # arrays
+    def array_contains(self, value: JsonValue) -> Condition:
+        return Condition(
+            field=self.name,
+            operator=Operator.ARRAY_CONTAINS,
+            value=value,
+            field_type=self.field_type,
+        )
+
+    def array_overlap(self, values: Sequence[JsonValue]) -> Condition:
+        return Condition(
+            field=self.name,
+            operator=Operator.ARRAY_OVERLAP,
+            value=list(values),
+            field_type=self.field_type,
+        )
+
+    def array_contained(self, values: Sequence[JsonValue]) -> Condition:
+        return Condition(
+            field=self.name,
+            operator=Operator.ARRAY_CONTAINED,
+            value=list(values),
+            field_type=self.field_type,
+        )
+
+    # geo
+    def geo_within(self, shape: dict[str, Any]) -> Condition:
+        return Condition(
+            field=self.name,
+            operator=Operator.GEO_WITHIN,
+            value=shape,
+            field_type=self.field_type,
+        )
+
+    def geo_intersects(self, shape: dict[str, Any]) -> Condition:
+        return Condition(
+            field=self.name,
+            operator=Operator.GEO_INTERSECTS,
+            value=shape,
             field_type=self.field_type,
         )
