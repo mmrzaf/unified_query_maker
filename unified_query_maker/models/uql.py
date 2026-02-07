@@ -1,16 +1,14 @@
 from __future__ import annotations
 
-from typing import Any, List, Optional
+from typing import Annotated, Any, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, constr, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
-from unified_query_maker.models.where_model import (
-    FilterExpressionModel,
-    normalize_filter_expression,
-)
 from unified_query_maker.utils import validate_qualified_name
 
-NonEmptyStr = constr(min_length=1)
+from .where_model import FilterExpression, FilterExpressionModel
+
+NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
 
 class WhereClause(BaseModel):
@@ -21,12 +19,12 @@ class WhereClause(BaseModel):
 
     @field_validator("must", "must_not", mode="before")
     @classmethod
-    def _normalize_expr_lists(cls, v: Any) -> Any:
+    def _validate_expr_lists(cls, v: Any) -> Any:
         if v is None:
             return None
         if not isinstance(v, list):
             raise TypeError("must/must_not must be arrays")
-        return [normalize_filter_expression(item) for item in v]
+        return v
 
 
 class OrderByItem(BaseModel):
@@ -35,12 +33,20 @@ class OrderByItem(BaseModel):
     field: NonEmptyStr
     order: str = Field("ASC", pattern="^(ASC|DESC)$")
 
+    @field_validator("field")
+    @classmethod
+    def _validate_field(cls, v: str) -> str:
+        validate_qualified_name(
+            str(v).strip(), allow_star=False, allow_trailing_star=False
+        )
+        return v
+
 
 QueryOutput = Any
 
 
 class UQLQuery(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     select: Optional[List[NonEmptyStr]] = None
     from_table: NonEmptyStr = Field(..., alias="from")
@@ -79,11 +85,17 @@ class UQLQuery(BaseModel):
 
     @field_validator("where", mode="before")
     @classmethod
-    def _normalize_where(cls, v: Any) -> Any:
+    def _coerce_where(cls, v: Any) -> Any:
         """
-        Convenience:
-        - If user passes a single expression (typed or legacy dict), wrap it into {"must":[...]}.
-        - If user passes a WhereClause instance, accept it as-is.
+        Single approach:
+          - where may be omitted
+          - where may be a WhereClause ({"must":[...], "must_not":[...]})
+          - or a single typed FilterExpression node, which is treated as {"must":[node]}
+
+        NOT accepted:
+          - legacy dict conditions
+          - shorthand boolean dicts
+          - untyped {"field":...,"operator":...} dicts (must include "type")
         """
         if v is None:
             return None
@@ -94,4 +106,17 @@ class UQLQuery(BaseModel):
         if isinstance(v, dict) and ("must" in v or "must_not" in v):
             return v
 
-        return {"must": [normalize_filter_expression(v)]}
+        # Single typed node (Condition/And/Or/Not) or dict with discriminator "type"
+        if isinstance(v, FilterExpression):
+            return {"must": [v]}
+
+        if isinstance(v, dict):
+            if "type" in v:
+                return {"must": [v]}
+            raise TypeError(
+                "Invalid where: filter nodes must include 'type' (typed AST only)"
+            )
+
+        raise TypeError(
+            "Invalid where: expected WhereClause or a typed filter expression"
+        )
