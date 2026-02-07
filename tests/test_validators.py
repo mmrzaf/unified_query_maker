@@ -18,7 +18,15 @@ def test_validate_uql_schema_invalid_returns_none():
 
 def test_validate_uql_semantics_basic_true():
     q = validate_uql_schema(
-        {"select": ["id"], "from": "t", "where": {"must": [{"a": {"gt": 1}}]}}
+        {
+            "select": ["id"],
+            "from": "t",
+            "where": {
+                "must": [
+                    {"type": "condition", "field": "a", "operator": "gt", "value": 1}
+                ]
+            },
+        }
     )
     assert q is not None
     assert validate_uql_semantics(q) is True

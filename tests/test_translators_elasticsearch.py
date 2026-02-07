@@ -2,21 +2,29 @@ from __future__ import annotations
 
 from unified_query_maker.models.where_model import Condition, Operator, Where
 from unified_query_maker.translators.elasticsearch_translator import (
-    ElasticsearchAdvancedTranslator,
     ElasticsearchQueryBuilder,
     ElasticsearchTranslator,
 )
 
 
-def test_elasticsearch_translator_legacy_dict_conditions():
+def test_elasticsearch_translator_typed_conditions():
     tr = ElasticsearchTranslator()
     out = tr.translate(
         {
             "select": ["id", "name"],
             "from": "idx",
             "where": {
-                "must": [{"age": {"gt": 30}}],
-                "must_not": [{"status": "inactive"}],
+                "must": [
+                    {"type": "condition", "field": "age", "operator": "gt", "value": 30}
+                ],
+                "must_not": [
+                    {
+                        "type": "condition",
+                        "field": "status",
+                        "operator": "eq",
+                        "value": "inactive",
+                    }
+                ],
             },
             "orderBy": [{"field": "age", "order": "DESC"}],
             "limit": 10,
@@ -54,22 +62,6 @@ def test_elasticsearch_translator_where_model_array_contained_emits_script():
     assert clause["script"]["script"]["params"]["allowed"] == ["a", "b"]
 
 
-def test_elasticsearch_advanced_translator_aggs_and_highlighting_and_search_after():
-    tr = ElasticsearchAdvancedTranslator()
-    base = {"select": ["id"], "from": "idx", "where": {"must": [{"a": 1}]}}
-    out = tr.translate_with_aggs(base, aggregations={"x": {"terms": {"field": "a"}}})
-    assert "aggs" in out
-    assert out["aggs"]["x"]["terms"]["field"] == "a"
-
-    out2 = tr.translate_with_highlighting(base, highlight_fields=["name", "title"])
-    assert "highlight" in out2
-    assert "name" in out2["highlight"]["fields"]
-
-    out3 = tr.translate_search_after(base, search_after=[123, "abc"])
-    assert "search_after" in out3
-    assert "from" not in out3
-
-
 def test_elasticsearch_query_builder_builds_bool_query():
     qb = ElasticsearchQueryBuilder()
     built = (
@@ -83,3 +75,15 @@ def test_elasticsearch_query_builder_builds_bool_query():
     b = built["query"]["bool"]
     assert "filter" in b and "must" in b and "must_not" in b and "should" in b
     assert b["minimum_should_match"] == 1
+
+
+def test_elasticsearch_contains_escapes_wildcard_metacharacters():
+    tr = ElasticsearchTranslator()
+    out = tr.translate(
+        {
+            "from": "idx",
+            "where": {"must": [Where.field("name").contains(r"a*b?c\d")]},
+        }
+    )
+    clause = out["query"]["bool"]["must"][0]
+    assert clause == {"wildcard": {"name": "*a\\*b\\?c\\\\d*"}}

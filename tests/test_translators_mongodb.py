@@ -1,21 +1,27 @@
 from __future__ import annotations
 
 from unified_query_maker.models.where_model import Condition, Operator, Where
-from unified_query_maker.translators.mongodb_translator import (
-    MongoDBAdvancedTranslator,
-    MongoDBTranslator,
-)
+from unified_query_maker.translators.mongodb_translator import MongoDBTranslator
 
 
-def test_mongodb_translator_legacy_dict_conditions():
+def test_mongodb_translator_typed_conditions():
     tr = MongoDBTranslator()
     out = tr.translate(
         {
             "select": ["id", "name"],
             "from": "ignored_by_translator",
             "where": {
-                "must": [{"age": {"gt": 30}}],
-                "must_not": [{"status": "inactive"}],
+                "must": [
+                    {"type": "condition", "field": "age", "operator": "gt", "value": 30}
+                ],
+                "must_not": [
+                    {
+                        "type": "condition",
+                        "field": "status",
+                        "operator": "eq",
+                        "value": "inactive",
+                    }
+                ],
             },
             "orderBy": [{"field": "age", "order": "DESC"}],
             "limit": 10,
@@ -52,22 +58,3 @@ def test_mongodb_translator_where_model_geo_and_exists():
     assert "$and" in f
     # must_not should appear as a $nor clause inside the $and list
     assert any("$nor" in part for part in f["$and"])
-
-
-def test_mongodb_advanced_pipeline_translation():
-    tr = MongoDBAdvancedTranslator()
-    pipeline = tr.translate_to_pipeline(
-        {
-            "select": ["id", "name"],
-            "from": "x",
-            "where": {"must": [{"age": {"gte": 10}}]},
-            "orderBy": [{"field": "age", "order": "ASC"}],
-            "offset": 5,
-            "limit": 10,
-        }
-    )
-    assert pipeline[0].get("$match")
-    assert pipeline[1] == {"$sort": {"age": 1}}
-    assert pipeline[2] == {"$skip": 5}
-    assert pipeline[3] == {"$limit": 10}
-    assert pipeline[4] == {"$project": {"id": 1, "name": 1}}

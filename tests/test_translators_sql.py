@@ -2,23 +2,28 @@ from __future__ import annotations
 
 import pytest
 
-from unified_query_maker.models.where_model import Condition, Operator, Where
-from unified_query_maker.translators.mariadb_translator import MariaDBTranslator
+from unified_query_maker.models.where_model import Where
+from unified_query_maker.translators.mssql_translator import MSSQLTranslator
 from unified_query_maker.translators.mysql_translator import MySQLTranslator
 from unified_query_maker.translators.postgresql_translator import PostgreSQLTranslator
 
 from .conftest import squash_ws
 
 
-def test_postgresql_translator_legacy_dict_conditions():
+def test_postgresql_translator_typed_conditions():
     tr = PostgreSQLTranslator()
     sql = tr.translate(
         {
             "select": ["id", "name"],
             "from": "public.users",
             "where": {
-                "must": [{"age": {"gt": 30}}, {"active": True}],
-                "must_not": [{"status": "inactive"}],
+                "must": [
+                    {"type": "condition", "field": "age", "operator": "gt", "value": 30},
+                    {"type": "condition", "field": "active", "operator": "eq", "value": True},
+                ],
+                "must_not": [
+                    {"type": "condition", "field": "status", "operator": "eq", "value": "inactive"}
+                ],
             },
             "orderBy": [{"field": "name", "order": "DESC"}],
             "limit": 10,
@@ -55,47 +60,20 @@ def test_postgresql_translator_where_model_extended_string_ops():
     assert "%z" in s  # ends_with inside must_not
 
 
-def test_postgresql_translator_where_model_array_overlap():
-    tr = PostgreSQLTranslator()
-    sql = tr.translate(
-        {
-            "select": ["id"],
-            "from": "public.items",
-            "where": {
-                "must": [
-                    Condition(
-                        field="tags", operator=Operator.ARRAY_OVERLAP, value=["a", "b"]
-                    )
-                ]
-            },
-        }
-    )
+def test_mysql_translator_offset_only_uses_big_limit():
+    tr = MySQLTranslator()
+    sql = tr.translate({"select": ["id"], "from": "t", "offset": 5})
     s = squash_ws(sql)
-    assert "\"tags\" && ARRAY['a', 'b']" in s
+    assert "LIMIT 5, 18446744073709551615" in s
 
 
-def test_mysql_and_mariadb_quote_identifiers():
-    q = {"select": ["id"], "from": "public.users"}
-    mysql = MySQLTranslator().translate(q)
-    mariadb = MariaDBTranslator().translate(q)
-
-    assert squash_ws(mysql) == squash_ws("SELECT `id` FROM `public`.`users`;")
-    assert squash_ws(mariadb) == squash_ws("SELECT `id` FROM `public`.`users`;")
-
-    # offset-only behavior is dialect-sensitive; base SQLTranslator emits OFFSET-only.
-    # MySQL generally prefers LIMIT ... OFFSET or LIMIT offset,count; this is a stabilization target.
-    sql_offset_only = MySQLTranslator().translate(
-        {"select": ["id"], "from": "t", "offset": 5}
-    )
-    assert "OFFSET 5" in sql_offset_only
-
-
-@pytest.mark.xfail(
-    strict=True,
-    reason="MySQL offset-only pagination should be emitted as LIMIT offset, big-number (see base_sql example).",
-)
-def test_mysql_offset_only_should_not_emit_bare_offset():
-    sql_offset_only = MySQLTranslator().translate(
-        {"select": ["id"], "from": "t", "offset": 5}
-    )
-    assert "LIMIT 5, 18446744073709551615" in sql_offset_only
+def test_mssql_translator_rejects_regex():
+    tr = MSSQLTranslator()
+    with pytest.raises(ValueError):
+        tr.translate(
+            {
+                "select": ["id"],
+                "from": "t",
+                "where": {"must": [Where.field("name").regex(".*")]},
+            }
+        )

@@ -36,7 +36,11 @@ def test_uqlquery_invalid_identifiers_rejected():
 
 def test_uqlquery_where_autowraps_single_expression_to_must():
     q = UQLQuery.model_validate(
-        {"select": ["id"], "from": "t", "where": {"a": {"gt": 1}}}
+        {
+            "select": ["id"],
+            "from": "t",
+            "where": {"type": "condition", "field": "a", "operator": "gt", "value": 1},
+        }
     )
     assert q.where is not None
     assert len(q.where.must) == 1
