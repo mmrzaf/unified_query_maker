@@ -1,250 +1,293 @@
+Below is a **clean, updated README** aligned with your current direction:
+
+* **One canonical model only** (typed UQL + typed filter AST)
+* **No legacy filter formats**
+* **Translators take a single `dict`/`UQLQuery` and return native query output**
+* **No claims of parameterization/`params` unless you actually return them**
+* **No claims of advanced features (search_after, highlight, aggregations) unless implemented**
+
+Copy-paste the whole thing as `README.md`.
+
+---
+
 # Unified Query Maker
 
-### One Query Language → Many Backends
+## One Query Language → Many Backends
 
-Unified Query Maker lets you describe queries once, in a structured JSON/Pydantic UQL model, and translate them into real queries for multiple database engines:
+Unified Query Maker lets you describe a query once using a strict, typed **UQL** (JSON/Pydantic) model and translate it into native queries for multiple backends.
 
-* Relational
-  PostgreSQL, MySQL, MariaDB, MSSQL, Oracle
-* Document / Search
-  Elasticsearch (DSL), MongoDB
-* Columnar / Wide
-  Cassandra
-* Graph / Document Graph
-  Neo4j (Cypher), OrientDB
+Supported backends:
 
-It provides:
+* **Relational (SQL)**: PostgreSQL, MySQL, MariaDB, MSSQL, Oracle
+* **Document / Search**: Elasticsearch (Query DSL), MongoDB
+* **Columnar / Wide**: Cassandra
+* **Graph / Document Graph**: Neo4j (Cypher), OrientDB
 
-* A **typed UQL model** with strict validation
-* A **powerful Where/Filter expression system** (typed; Boolean graph; array ops; dates; text)
-* **Forward-compatible translators** (legacy dict filters supported, but typed model is recommended)
-* Consistent error semantics
-* Clean Python API
+What you get:
 
-This library is designed for real BI systems, analytics services, internal platforms, and serious backend workloads—not for toy scripts.
+* A **single canonical UQL schema** (Pydantic v2)
+* A **typed filter AST** (`condition`, `and`, `or`, `not`) with strict validation
+* Translators that **only** accept the canonical model (no legacy formats)
+* Predictable failures: invalid queries are rejected early
+
+This library is built for production systems that value correctness over “it kinda works”.
 
 ---
 
 ## Install
 
-```
+```bash
 pip install unified-query-maker
 ```
 
-Supports Python 3.9+ and Pydantic 2.x.
+Supports Python **3.9+** and **Pydantic 2.x**.
 
 ---
 
-## Core Concepts
+## UQL in 60 seconds
 
-### 1️⃣ UQL Query Model
+A UQL query describes:
 
-A `UQLQuery` describes:
+* `select`: fields to fetch (or `["*"]`)
+* `from`: source (table / index / collection)
+* `where`: optional `must` / `must_not` filter lists
+* `orderBy`: ordering
+* `limit` / `offset`: pagination (where supported by the backend)
 
-* fields to select
-* source (table / index / collection)
-* optional filters
-* ordering
-* pagination
-
-Example:
+### Minimal example
 
 ```python
-from unified_query_maker import UQLQuery, OrderByItem
+from unified_query_maker import PostgreSQLTranslator
 
-query = UQLQuery(
-    select=["id", "name", "age"],
-    from_="public.users",
-    where=None,
-    order_by=[OrderByItem(field="age", direction="desc")],
-    limit=50,
-    offset=0,
-)
+uql = {
+  "select": ["id", "name"],
+  "from": "public.users",
+  "where": {
+    "must": [
+      {"type": "condition", "field": "status", "operator": "eq", "value": "active"}
+    ]
+  },
+  "orderBy": [{"field": "id", "order": "ASC"}],
+  "limit": 50,
+  "offset": 0
+}
+
+sql = PostgreSQLTranslator().translate(uql)
+print(sql)
 ```
 
 ---
 
-### 2️⃣ Strong Where Model (Recommended)
+## Filters (Where model)
 
-Typed, composable, expressive.
+Filters are a **typed AST**. Every node must include a `type` discriminator.
 
-```python
-from unified_query_maker import Where
+### Condition node
 
-where = Where.must([
-    Where.field("age").gte(18),
-    Where.field("status").eq("active"),
-    Where.field("tags").contains_any(["premium", "gold"]),
-])
+```json
+{
+  "type": "condition",
+  "field": "age",
+  "operator": "gte",
+  "value": 18
+}
 ```
 
-Supports:
+### Boolean nodes
 
-* `eq`, `neq`
-* `gt`, `gte`, `lt`, `lte`
-* `in_`, `nin`
-* `contains`, `contains_any`, `contains_all`
-* `exists`, `not_exists`
-* date / datetime values
-* nested AND / OR / NOT expressions
-
-Boolean graph rules are strict:
-
-* empty AND / OR / NOT is invalid
-* malformed expressions are rejected at validation
-
----
-
-### 3️⃣ Legacy Filter Support (Still Works)
-
-If you have existing JSON filters, they continue to work:
-
-```python
-legacy_where = {
-  "must": [
-    {"field": "age", "op": "gte", "value": 18}
+```json
+{
+  "type": "and",
+  "expressions": [
+    { "type": "condition", "field": "status", "operator": "eq", "value": "active" },
+    { "type": "condition", "field": "age", "operator": "gte", "value": 18 }
   ]
 }
 ```
 
-However: the typed `Where` model is the future. Migration is encouraged.
+```json
+{
+  "type": "not",
+  "expression": {
+    "type": "condition",
+    "field": "country",
+    "operator": "in",
+    "value": ["RU", "BY"]
+  }
+}
+```
+
+### WhereClause structure
+
+UQL uses an explicit `must` / `must_not` container:
+
+```python
+uql = {
+  "from": "users",
+  "where": {
+    "must": [
+      {"type": "condition", "field": "status", "operator": "eq", "value": "active"}
+    ],
+    "must_not": [
+      {"type": "condition", "field": "email", "operator": "icontains", "value": "test"}
+    ]
+  }
+}
+```
+
+Rules are strict:
+
+* `and/or` must have at least one expression
+* `not` must have exactly one expression
+* invalid operator/value combinations fail validation
+
+---
+
+## Fluent filter builder (Python)
+
+You can build typed filters without writing dicts:
+
+```python
+from unified_query_maker import Where, PostgreSQLTranslator
+
+where = Where.and_(
+    Where.field("age").gte(18),
+    Where.field("status").eq("active"),
+    ~Where.field("email").icontains("test"),
+)
+
+uql = {
+  "select": ["id", "name", "age"],
+  "from": "public.users",
+  "where": {"must": [where]},
+  "orderBy": [{"field": "age", "order": "DESC"}],
+  "limit": 50,
+}
+
+print(PostgreSQLTranslator().translate(uql))
+```
+
+---
+
+## Operator reference (filters)
+
+### Comparison
+
+* `eq`, `neq`, `gt`, `gte`, `lt`, `lte`
+* `between` (requires `[min, max]`)
+
+### Membership / existence
+
+* `in` (requires list)
+* `nin` (requires list)
+* `exists`, `nexists` (no value)
+
+### Strings
+
+* `contains`, `ncontains`, `icontains`
+* `starts_with`, `ends_with`
+* `ilike` (pattern; backend-specific implementation)
+* `regex` (backend-specific support)
+
+### Arrays
+
+* `array_contains` (scalar membership in array)
+* `array_overlap` (requires list)
+* `array_contained` (requires list)
+
+### Geo
+
+* `geo_within`, `geo_intersects` (requires object/dict)
+
+> Backend support varies. If an operator is not supported for a translator/dialect, translation fails with a clear error.
 
 ---
 
 ## Translators
 
-Each translator turns UQL into the native engine query.
+Translators accept a UQL dict (or a `UQLQuery`-compatible structure) and return a native query representation.
 
----
-
-### PostgreSQL / MySQL / MariaDB / MSSQL / Oracle
+### SQL translators (PostgreSQL / MySQL / MariaDB / MSSQL / Oracle)
 
 ```python
 from unified_query_maker import PostgreSQLTranslator
 
-sql = PostgreSQLTranslator().translate(query, where=where)
-print(sql.query)
-print(sql.params)
+sql = PostgreSQLTranslator().translate({
+  "select": ["id", "name"],
+  "from": "public.users",
+  "where": {"must": [
+    {"type": "condition", "field": "age", "operator": "gte", "value": 18}
+  ]},
+  "limit": 10,
+})
+print(sql)
 ```
 
-Behavior:
+Notes:
 
-* Identifier validation / quoting
-* Safe parameterization
-* Proper pagination semantics
-* Strict validation before translation
+* This library outputs SQL text. (If you need parameterized queries, add a `(sql, params)` API in a future release.)
+* Identifier segments are validated before translation.
 
-MySQL note: offset-only semantics are currently aligned with existing implementation; documented in tests.
-
----
-
-### Elasticsearch
-
-Works with DSL query objects. Supports both basic and **advanced mode**.
+### Elasticsearch (Query DSL)
 
 ```python
 from unified_query_maker import ElasticsearchTranslator
 
-body = ElasticsearchTranslator().translate(query, where=where)
+body = ElasticsearchTranslator().translate({
+  "from": "users",
+  "where": {"must": [
+    {"type": "condition", "field": "status", "operator": "eq", "value": "active"},
+    {"type": "condition", "field": "name", "operator": "icontains", "value": "anna"},
+  ]},
+  "limit": 25,
+  "offset": 0,
+})
+print(body)
 ```
 
-Supports:
-
-* term, range, bool
-* must / should / must_not
-* search_after
-* highlight
-* aggregations (advanced translator)
-
----
-
 ### MongoDB
-
-Supports both simple find queries and advanced pipelines.
 
 ```python
 from unified_query_maker import MongoDBTranslator
 
-doc = MongoDBTranslator().translate(query, where=where)
+doc = MongoDBTranslator().translate({
+  "from": "users",
+  "where": {"must": [
+    {"type": "condition", "field": "status", "operator": "eq", "value": "active"}
+  ]},
+  "limit": 50,
+})
+print(doc)
 ```
-
-Handles:
-
-* logical operators
-* arrays
-* dates
-* existence operators
-
----
-
-### Cassandra
-
-Translates to valid Cassandra query expressions.
-Respects Cassandra’s real-world constraints.
-
-* unsupported ordering / offset is explicitly rejected
-* certain negations are rewritten safely when possible
-
----
-
-### Neo4j (Cypher)
-
-Produces Cypher with filter conditions mapped appropriately.
-
----
-
-### OrientDB
-
-Graph/document hybrid translation mapped from UQL constructs.
 
 ---
 
 ## Validation
 
-Two layers of protection.
+Validation is built-in. UQL is parsed via Pydantic models; invalid queries fail early.
 
-### Schema Validation
+If you want explicit validation:
 
 ```python
-from unified_query_maker import validate_uql_schema
+from unified_query_maker.models import UQLQuery
 
-validate_uql_schema(query)
+UQLQuery.model_validate({
+  "from": "users",
+  "where": {"must": [
+    {"type": "condition", "field": "age", "operator": "between", "value": [18, 30]}
+  ]}
+})
 ```
-
-Ensures structure is correct.
 
 ---
 
-### Semantic Validation
+## Public API
 
-```python
-from unified_query_maker import validate_uql_semantics
-
-validate_uql_semantics(query.where)
-```
-
-Ensures:
-
-* boolean expressions are meaningful
-* filters are not empty nonsense
-* operators make sense for the structure
-
-If something is invalid, it fails early and loudly.
-This is on purpose.
-
----
-
-## Public API Surface
-
-Everything you’re meant to use is cleanly exported:
+Typical imports:
 
 ```python
 from unified_query_maker import (
-    UQLQuery,
     Where,
-    OrderByItem,
-    validate_uql_schema,
-    validate_uql_semantics,
 
     PostgreSQLTranslator,
     MySQLTranslator,
@@ -263,17 +306,15 @@ from unified_query_maker import (
 
 ---
 
-## Status & Expectations
+## Versioning & breaking changes
 
-This library is built to be used in production analytics / data platforms.
-It is not a toy. Its constraints are deliberate.
+This library is strict by design. When the schema changes, it may be a breaking change.
 
-We prefer correctness, explicitness, and predictable failures over “magically doing something”.
-
-If that is your philosophy too, you will be comfortable here.
+If you upgrade across versions, review the changelog and update your UQL accordingly.
 
 ---
 
 ## License
 
-MIT.
+MIT
+
