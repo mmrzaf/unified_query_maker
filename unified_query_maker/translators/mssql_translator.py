@@ -1,5 +1,6 @@
-from .base_sql import SQLTranslator
 from unified_query_maker.models import UQLQuery
+
+from .base_sql import SQLTranslator
 
 
 class MSSQLTranslator(SQLTranslator):
@@ -23,3 +24,6 @@ class MSSQLTranslator(SQLTranslator):
         if limit is None:
             return f"OFFSET {offset} ROWS"
         return f"OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY"
+
+    def _format_bool(self, value: bool) -> str:
+        return "1" if value else "0"

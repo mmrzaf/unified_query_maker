@@ -1,11 +1,6 @@
-"""
-Updated Elasticsearch Translator with Where Model Support
-=========================================================
+from __future__ import annotations
 
-Supports both legacy dict-based conditions and new Where/Filter model.
-"""
-
-from typing import Any, Dict, Union
+from typing import Any, Dict, Optional
 
 from pydantic import ValidationError
 
@@ -20,34 +15,78 @@ from unified_query_maker.models.where_model import (
     OrExpression,
 )
 from unified_query_maker.translators.base import QueryTranslator
-from unified_query_maker.utils import parse_condition
 
 
-class ElasticsearchConditionTranslator(FilterVisitor):
+def _like_to_wildcard_pattern(pattern: str) -> str:
     """
-    Visitor that translates Where model conditions to Elasticsearch Query DSL.
+    Convert SQL LIKE pattern (%, _) into ES wildcard (*, ?).
+
+    - Treat backslash (\\) as escaping the next char (matching SQL ESCAPE '\\').
+    - Escape ES wildcard meta characters in literal output.
     """
+    out: list[str] = []
+    s = str(pattern)
+    i = 0
+
+    while i < len(s):
+        ch = s[i]
+
+        if ch == "\\":
+            i += 1
+            if i >= len(s):
+                out.append(_escape_wildcard_literal("\\"))
+                break
+            out.append(_escape_wildcard_literal(s[i]))
+            i += 1
+            continue
+
+        if ch == "%":
+            out.append("*")
+        elif ch == "_":
+            out.append("?")
+        else:
+            out.append(_escape_wildcard_literal(ch))
+        i += 1
+
+    return "".join(out)
+
+
+def _escape_wildcard_literal(value: str) -> str:
+    """
+    Escape Elasticsearch wildcard meta characters in a *literal* string.
+
+    In ES wildcard syntax, '*', '?', and '\\' are special.
+    """
+    out: list[str] = []
+    for ch in str(value):
+        if ch in ("*", "?", "\\"):
+            out.append("\\" + ch)
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+class ElasticsearchConditionTranslator(FilterVisitor[Dict[str, Any]]):
+    """Visitor that translates Where-model expressions to Elasticsearch Query DSL."""
 
     def visit_condition(self, condition: Condition) -> Dict[str, Any]:
-        """Translate a single condition to Elasticsearch query."""
         field = condition.field
         op = condition.operator
         value = condition.value
 
-        # Existence operators
+        # Existence
         if op == Operator.EXISTS:
             return {"exists": {"field": field}}
         if op == Operator.NEXISTS:
-            return {"bool": {"must_not": {"exists": {"field": field}}}}
+            return {"bool": {"must_not": [{"exists": {"field": field}}]}}
 
-        # Equality operators
+        # Equality
         if op == Operator.EQ:
-            # Use term query for exact match
             return {"term": {field: value}}
         if op == Operator.NEQ:
-            return {"bool": {"must_not": {"term": {field: value}}}}
+            return {"bool": {"must_not": [{"term": {field: value}}]}}
 
-        # Comparison operators
+        # Comparison / ranges
         if op == Operator.GT:
             return {"range": {field: {"gt": value}}}
         if op == Operator.GTE:
@@ -57,89 +96,102 @@ class ElasticsearchConditionTranslator(FilterVisitor):
         if op == Operator.LTE:
             return {"range": {field: {"lte": value}}}
         if op == Operator.BETWEEN:
-            min_val, max_val = value
-            return {"range": {field: {"gte": min_val, "lte": max_val}}}
+            if not isinstance(value, list) or len(value) != 2:
+                raise ValueError("BETWEEN expects a 2-item list value")
+            lo, hi = value
+            return {"range": {field: {"gte": lo, "lte": hi}}}
 
-        # Membership operators
+        # Membership
         if op == Operator.IN:
             return {"terms": {field: value}}
         if op == Operator.NIN:
-            return {"bool": {"must_not": {"terms": {field: value}}}}
+            return {"bool": {"must_not": [{"terms": {field: value}}]}}
 
-        # String operators
+        # String ops (wildcard/prefix/regexp)
         if op == Operator.CONTAINS:
-            # Wildcard query for substring
-            return {"wildcard": {field: f"*{value}*"}}
+            lit = _escape_wildcard_literal(str(value))
+            return {"wildcard": {field: f"*{lit}*"}}
+
         if op == Operator.NCONTAINS:
-            return {"bool": {"must_not": {"wildcard": {field: f"*{value}*"}}}}
+            lit = _escape_wildcard_literal(str(value))
+            return {"bool": {"must_not": [{"wildcard": {field: f"*{lit}*"}}]}}
+
         if op == Operator.ICONTAINS:
-            # Match query with lowercase (requires text field)
-            return {"match": {field: {"query": value, "operator": "and"}}}
+            lit = _escape_wildcard_literal(str(value))
+            return {
+                "wildcard": {field: {"value": f"*{lit}*", "case_insensitive": True}}
+            }
+
+        if op == Operator.ENDS_WITH:
+            lit = _escape_wildcard_literal(str(value))
+            return {"wildcard": {field: f"*{lit}"}}
         if op == Operator.STARTS_WITH:
             return {"prefix": {field: value}}
-        if op == Operator.ENDS_WITH:
-            return {"wildcard": {field: f"*{value}"}}
+
         if op == Operator.ILIKE:
-            # Convert SQL LIKE to wildcard with lowercase
-            pattern = value.replace("%", "*").replace("_", "?").lower()
-            # Use lowercase field variant if available
-            return {"wildcard": {f"{field}.lowercase": pattern}}
+            if not isinstance(value, str):
+                raise ValueError("ILIKE expects a string pattern")
+            wildcard = _like_to_wildcard_pattern(value)
+            return {"wildcard": {field: {"value": wildcard, "case_insensitive": True}}}
         if op == Operator.REGEX:
             return {"regexp": {field: value}}
 
-        # Array operators
+        # Arrays
         if op == Operator.ARRAY_CONTAINS:
+            # For arrays of primitives, term matches any element; list semantics are backend-specific.
+            if isinstance(value, list):
+                # Best-effort: require all provided values to be present (bool must of terms).
+                return {"bool": {"must": [{"term": {field: v}} for v in value]}}
             return {"term": {field: value}}
+
         if op == Operator.ARRAY_OVERLAP:
             return {"terms": {field: value}}
+
         if op == Operator.ARRAY_CONTAINED:
-            # All array elements must be in the provided list
-            # Use script query for this
-            script = f"""
-                def fieldValues = doc['{field}'].values;
-                def allowed = params.allowed;
-                for (def v : fieldValues) {{
-                    if (!allowed.contains(v)) {{
-                        return false;
-                    }}
-                }}
-                return true;
-            """
+            # Ensure all elements of doc[field] are within the allowed list.
+            # Painless script is portable across common ES versions.
+            if not isinstance(value, list):
+                raise ValueError("ARRAY_CONTAINED expects a list value")
             return {
-                "script": {"script": {"source": script, "params": {"allowed": value}}}
+                "script": {
+                    "script": {
+                        "lang": "painless",
+                        "source": (
+                            "def vals = doc.containsKey(params.f) ? doc[params.f] : null; "
+                            "if (vals == null) return true; "
+                            "for (def v : vals) { if (!params.allowed.contains(v)) return false; } "
+                            "return true;"
+                        ),
+                        "params": {"allowed": value, "f": field},
+                    }
+                }
             }
 
-        # Geospatial operators
+        # Geo
         if op == Operator.GEO_WITHIN:
             return {"geo_shape": {field: {"shape": value, "relation": "within"}}}
         if op == Operator.GEO_INTERSECTS:
             return {"geo_shape": {field: {"shape": value, "relation": "intersects"}}}
 
-        # Fallback
         raise ValueError(f"Unsupported operator for Elasticsearch: {op}")
 
     def visit_and(self, and_expr: AndExpression) -> Dict[str, Any]:
-        """Translate AND expression."""
-        sub_queries = [expr.accept(self) for expr in and_expr.expressions]
-        return {"bool": {"must": sub_queries}}
+        return {"bool": {"must": [expr.accept(self) for expr in and_expr.expressions]}}
 
     def visit_or(self, or_expr: OrExpression) -> Dict[str, Any]:
-        """Translate OR expression."""
-        sub_queries = [expr.accept(self) for expr in or_expr.expressions]
-        return {"bool": {"should": sub_queries, "minimum_should_match": 1}}
+        return {
+            "bool": {
+                "should": [expr.accept(self) for expr in or_expr.expressions],
+                "minimum_should_match": 1,
+            }
+        }
 
     def visit_not(self, not_expr: NotExpression) -> Dict[str, Any]:
-        """Translate NOT expression."""
-        sub_query = not_expr.expression.accept(self)
-        return {"bool": {"must_not": sub_query}}
+        return {"bool": {"must_not": [not_expr.expression.accept(self)]}}
 
 
 class ElasticsearchTranslator(QueryTranslator):
-    """
-    Elasticsearch translator with support for both dict-based and Where model conditions.
-
-    Backward compatible: automatically detects and handles both formats.
-    """
+    """Elasticsearch translator for the UQLQuery model (no legacy formats)."""
 
     def translate(self, uql: Dict[str, Any]) -> Dict[str, Any]:
         try:
@@ -147,166 +199,55 @@ class ElasticsearchTranslator(QueryTranslator):
         except ValidationError as e:
             raise ValueError(f"Invalid UQL query: {e}") from e
 
-        es_bool: Dict[str, Any] = {}
+        out: Dict[str, Any] = {}
 
-        if parsed.where:
-            # Build must and must_not clauses
-            if parsed.where.must:
-                es_bool["must"] = [self._parse_condition(c) for c in parsed.where.must]
-            if parsed.where.must_not:
-                es_bool["must_not"] = [
-                    self._parse_condition(c) for c in parsed.where.must_not
-                ]
-
-        out: Dict[str, Any] = {"query": {"bool": es_bool}}
-
+        # _source (projection)
         if parsed.select and parsed.select != ["*"]:
             out["_source"] = parsed.select
-        if parsed.orderBy:
-            out["sort"] = [
-                {item.field: {"order": item.order.lower()}} for item in parsed.orderBy
-            ]
+
+        # Pagination
         if parsed.limit is not None:
             out["size"] = parsed.limit
         if parsed.offset is not None:
             out["from"] = parsed.offset
 
+        # Sorting
+        if parsed.orderBy:
+            out["sort"] = [
+                {item.field: {"order": item.order.lower()}} for item in parsed.orderBy
+            ]
+
+        # Query
+        if parsed.where and (parsed.where.must or parsed.where.must_not):
+            visitor = ElasticsearchConditionTranslator()
+            bool_query: Dict[str, Any] = {}
+
+            if parsed.where.must:
+                bool_query["must"] = [
+                    expr.accept(visitor) for expr in parsed.where.must
+                ]
+
+            if parsed.where.must_not:
+                bool_query["must_not"] = [
+                    expr.accept(visitor) for expr in parsed.where.must_not
+                ]
+
+            out["query"] = {"bool": bool_query}
+        else:
+            out["query"] = {"match_all": {}}
+
         return out
 
-    def _parse_condition(
-        self, condition: Union[Dict[str, Any], FilterExpression]
-    ) -> Dict[str, Any]:
-        """
-        Parse a condition - supports both dict format and Where model.
 
-        Args:
-            condition: Either a dict (legacy) or FilterExpression (new)
-
-        Returns:
-            Elasticsearch query clause
-        """
-        # New Where model - use visitor
-        if isinstance(condition, FilterExpression):
-            visitor = ElasticsearchConditionTranslator()
-            return condition.accept(visitor)
-
-        # Legacy dict format - preserve original behavior
-        return self._parse_dict_condition(condition)
-
-    def _parse_dict_condition(self, condition: Dict[str, Any]) -> Dict[str, Any]:
-        """Parse legacy dict-based condition."""
-        field, op, value = parse_condition(condition)
-
-        if op in ("gt", "gte", "lt", "lte"):
-            return {"range": {field: {op: value}}}
-        if op == "eq":
-            return {"term": {field: value}}
-        if op == "neq":
-            return {"bool": {"must_not": [{"term": {field: value}}]}}
-        if op == "in":
-            return {"terms": {field: value}}
-        if op == "nin":
-            return {"bool": {"must_not": [{"terms": {field: value}}]}}
-        if op == "exists":
-            return {"exists": {"field": field}}
-        if op == "nexists":
-            return {"bool": {"must_not": [{"exists": {"field": field}}]}}
-
-        # Extended operators (if present in legacy format)
-        if op == "contains":
-            return {"wildcard": {field: f"*{value}*"}}
-        if op == "starts_with":
-            return {"prefix": {field: value}}
-        if op == "ends_with":
-            return {"wildcard": {field: f"*{value}"}}
-
-        # Default fallback
-        return {"term": {field: value}}
-
-
-# Example: Extended Elasticsearch translator with aggregations
-class ElasticsearchAdvancedTranslator(ElasticsearchTranslator):
-    """
-    Extended Elasticsearch translator with aggregation support.
-    """
-
-    def translate_with_aggs(
-        self, uql: Dict[str, Any], aggregations: Dict[str, Any] = None
-    ) -> Dict[str, Any]:
-        """
-        Translate query with aggregations.
-
-        Args:
-            uql: UQL query
-            aggregations: Elasticsearch aggregations dict
-
-        Returns:
-            Complete Elasticsearch query with aggregations
-        """
-        # Get base query
-        query = self.translate(uql)
-
-        # Add aggregations if provided
-        if aggregations:
-            query["aggs"] = aggregations
-
-        return query
-
-    def translate_search_after(
-        self, uql: Dict[str, Any], search_after: list = None
-    ) -> Dict[str, Any]:
-        """
-        Translate with search_after for efficient deep pagination.
-
-        Args:
-            uql: UQL query
-            search_after: Values from previous page's sort
-
-        Returns:
-            Elasticsearch query with search_after
-        """
-        query = self.translate(uql)
-
-        # Remove from/size for search_after pagination
-        if search_after:
-            query.pop("from", None)
-            query["search_after"] = search_after
-
-        return query
-
-    def translate_with_highlighting(
-        self, uql: Dict[str, Any], highlight_fields: list = None
-    ) -> Dict[str, Any]:
-        """
-        Translate with result highlighting.
-
-        Args:
-            uql: UQL query
-            highlight_fields: List of fields to highlight
-
-        Returns:
-            Elasticsearch query with highlighting
-        """
-        query = self.translate(uql)
-
-        if highlight_fields:
-            query["highlight"] = {"fields": {field: {} for field in highlight_fields}}
-
-        return query
-
-
-# Example: Builder for complex Elasticsearch queries
 class ElasticsearchQueryBuilder:
-    """
-    Builder for constructing complex Elasticsearch queries with Where model.
-    """
+    """Builder for constructing complex Elasticsearch queries with Where model."""
 
-    def __init__(self):
-        self.filter_expr: FilterExpression = None
-        self.must_exprs: list = []
-        self.must_not_exprs: list = []
-        self.should_exprs: list = []
-        self.minimum_should_match: int = None
+    def __init__(self) -> None:
+        self.filter_expr: Optional[FilterExpression] = None
+        self.must_exprs: list[FilterExpression] = []
+        self.must_not_exprs: list[FilterExpression] = []
+        self.should_exprs: list[FilterExpression] = []
+        self.minimum_should_match: Optional[int] = None
 
     def filter(self, expr: FilterExpression) -> "ElasticsearchQueryBuilder":
         """Add filter context (no scoring)."""
@@ -335,7 +276,7 @@ class ElasticsearchQueryBuilder:
     def build(self) -> Dict[str, Any]:
         """Build the complete Elasticsearch query."""
         visitor = ElasticsearchConditionTranslator()
-        bool_query = {}
+        bool_query: Dict[str, Any] = {}
 
         if self.filter_expr:
             bool_query["filter"] = self.filter_expr.accept(visitor)
@@ -350,7 +291,7 @@ class ElasticsearchQueryBuilder:
 
         if self.should_exprs:
             bool_query["should"] = [expr.accept(visitor) for expr in self.should_exprs]
-            if self.minimum_should_match:
+            if self.minimum_should_match is not None:
                 bool_query["minimum_should_match"] = self.minimum_should_match
 
         return {"query": {"bool": bool_query}}

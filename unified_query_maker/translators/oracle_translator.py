@@ -1,4 +1,5 @@
 from unified_query_maker.models import UQLQuery
+
 from .base_sql import SQLTranslator
 
 
@@ -29,3 +30,9 @@ class OracleTranslator(SQLTranslator):
             return f"FETCH FIRST {limit} ROWS ONLY"
         # offset only
         return f"OFFSET {offset} ROWS"
+
+    def _format_bool(self, value: bool) -> str:
+        return "1" if value else "0"
+
+    def _render_regex(self, field_sql: str, pattern: object) -> str:
+        return f"REGEXP_LIKE({field_sql}, {self._format_value(pattern)})"
