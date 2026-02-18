@@ -7,6 +7,10 @@ class MSSQLTranslator(SQLTranslator):
     def _escape_identifier(self, identifier: str) -> str:
         return f"[{identifier}]"
 
+    def _param_placeholder(self, index_1_based: int) -> str:
+        # Typical DB-API style for SQL Server via pyodbc.
+        return "?"
+
     def _build_order_by_clause(self, query: UQLQuery) -> str:
         base = super()._build_order_by_clause(query)
         if base:
