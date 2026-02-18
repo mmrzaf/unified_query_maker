@@ -25,4 +25,4 @@ class MySQLTranslator(SQLTranslator):
         return f"LIMIT {limit} OFFSET {offset}"
 
     def _render_regex(self, field_sql: str, pattern: object) -> str:
-        return f"{field_sql} REGEXP {self._format_value(pattern)}"
+        return f"{field_sql} REGEXP {self._value(pattern)}"

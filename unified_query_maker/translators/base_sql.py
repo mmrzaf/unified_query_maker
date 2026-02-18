@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import ValidationError
 
@@ -42,7 +42,6 @@ class SQLConditionTranslator(FilterVisitor[str]):
 
     def __init__(self, parent_translator: "SQLTranslator"):
         self.parent = parent_translator
-        self.params: List[Any] = []  # reserved for future parameterization
 
     def visit_condition(self, condition: Condition) -> str:
         field_sql = self.parent._escape_column_name(condition.field)
@@ -63,81 +62,72 @@ class SQLConditionTranslator(FilterVisitor[str]):
 
         # Basic comparisons
         if op == Operator.EQ:
-            return f"{field_sql} = {self.parent._format_value(value)}"
+            return f"{field_sql} = {self.parent._value(value)}"
         if op == Operator.NEQ:
-            return f"{field_sql} <> {self.parent._format_value(value)}"
+            return f"{field_sql} <> {self.parent._value(value)}"
         if op == Operator.GT:
-            return f"{field_sql} > {self.parent._format_value(value)}"
+            return f"{field_sql} > {self.parent._value(value)}"
         if op == Operator.GTE:
-            return f"{field_sql} >= {self.parent._format_value(value)}"
+            return f"{field_sql} >= {self.parent._value(value)}"
         if op == Operator.LT:
-            return f"{field_sql} < {self.parent._format_value(value)}"
+            return f"{field_sql} < {self.parent._value(value)}"
         if op == Operator.LTE:
-            return f"{field_sql} <= {self.parent._format_value(value)}"
+            return f"{field_sql} <= {self.parent._value(value)}"
 
-        # Membership
-        if op in (Operator.IN, Operator.NIN):
-            if not isinstance(value, list):
-                raise ValueError(f"{op} expects a list value")
-            if len(value) == 0:
-                raise ValueError(f"{op} expects a non-empty list value")
-            in_list = self.parent._format_value(value)  # "(...)" for lists
-            neg = "NOT " if op == Operator.NIN else ""
-            return f"{field_sql} {neg}IN {in_list}"
-
-        # Range
+        # BETWEEN
         if op == Operator.BETWEEN:
             if not isinstance(value, list) or len(value) != 2:
                 raise ValueError("BETWEEN expects a 2-item list value")
             lo, hi = value
-            return (
-                f"{field_sql} BETWEEN {self.parent._format_value(lo)} "
-                f"AND {self.parent._format_value(hi)}"
+            return f"{field_sql} BETWEEN {self.parent._value(lo)} AND {self.parent._value(hi)}"
+
+        # IN / NIN
+        if op in (Operator.IN, Operator.NIN):
+            if not isinstance(value, list) or len(value) == 0:
+                raise ValueError("IN/NIN expects a non-empty list value")
+            in_list = self.parent._values_list(value)
+            if op == Operator.IN:
+                return f"{field_sql} IN {in_list}"
+            return f"{field_sql} NOT IN {in_list}"
+
+        # Strings (built on LIKE/ILIKE)
+        if op == Operator.CONTAINS:
+            pat = f"%{_escape_like_literal(str(value))}%"
+            return self.parent._render_like(
+                field_sql=field_sql, pattern=pat, negate=False, case_insensitive=False
             )
-
-        # LIKE family (literal substring semantics)
-        if op in (
-            Operator.CONTAINS,
-            Operator.NCONTAINS,
-            Operator.ICONTAINS,
-            Operator.STARTS_WITH,
-            Operator.ENDS_WITH,
-        ):
-            if not isinstance(value, str):
-                raise ValueError(f"{op} expects a string value")
-
-            escaped = _escape_like_literal(value)
-
-            if op in (Operator.CONTAINS, Operator.NCONTAINS, Operator.ICONTAINS):
-                pattern = f"%{escaped}%"
-            elif op == Operator.STARTS_WITH:
-                pattern = f"{escaped}%"
-            else:  # ENDS_WITH
-                pattern = f"%{escaped}"
-
-            negate = op == Operator.NCONTAINS
-            case_insensitive = op == Operator.ICONTAINS
-
+        if op == Operator.NCONTAINS:
+            pat = f"%{_escape_like_literal(str(value))}%"
+            return self.parent._render_like(
+                field_sql=field_sql, pattern=pat, negate=True, case_insensitive=False
+            )
+        if op == Operator.ICONTAINS:
+            pat = f"%{_escape_like_literal(str(value))}%"
+            return self.parent._render_like(
+                field_sql=field_sql, pattern=pat, negate=False, case_insensitive=True
+            )
+        if op == Operator.STARTS_WITH:
+            pat = f"{_escape_like_literal(str(value))}%"
+            return self.parent._render_like(
+                field_sql=field_sql, pattern=pat, negate=False, case_insensitive=False
+            )
+        if op == Operator.ENDS_WITH:
+            pat = f"%{_escape_like_literal(str(value))}"
+            return self.parent._render_like(
+                field_sql=field_sql, pattern=pat, negate=False, case_insensitive=False
+            )
+        if op == Operator.ILIKE:
+            # Treat as raw pattern (caller supplies %, _ as desired)
             return self.parent._render_like(
                 field_sql=field_sql,
-                pattern=pattern,
-                negate=negate,
-                case_insensitive=case_insensitive,
+                pattern=str(value),
+                negate=False,
+                case_insensitive=True,
             )
-
-        # ILIKE (pattern semantics)
-        if op == Operator.ILIKE:
-            if not isinstance(value, str):
-                raise ValueError("ILIKE expects a string pattern")
-            return self.parent._render_ilike(field_sql, value)
-
-        # Regex (dialect-specific)
         if op == Operator.REGEX:
-            if not isinstance(value, str):
-                raise ValueError("REGEX expects a string pattern")
             return self.parent._render_regex(field_sql, value)
 
-        # Array (dialect-specific)
+        # Arrays (dialect-specific)
         if op == Operator.ARRAY_CONTAINS:
             return self.parent._render_array_contains(field_sql, value)
         if op == Operator.ARRAY_OVERLAP:
@@ -145,9 +135,9 @@ class SQLConditionTranslator(FilterVisitor[str]):
         if op == Operator.ARRAY_CONTAINED:
             return self.parent._render_array_contained(field_sql, value)
 
-        # Geo not portable in generic SQL
+        # Geo not supported in SQL translators by default
         if op in (Operator.GEO_WITHIN, Operator.GEO_INTERSECTS):
-            raise ValueError(f"Unsupported operator for SQL: {op}")
+            raise ValueError("GEO operators are not supported for SQL translators")
 
         raise ValueError(f"Unsupported operator for SQL: {op}")
 
@@ -166,31 +156,69 @@ class SQLConditionTranslator(FilterVisitor[str]):
 
 
 class SQLTranslator(QueryTranslator):
-    """SQL translator for the UQLQuery model (no legacy formats)."""
+    """
+    Base SQL translator.
+
+    - translate(uql) -> SQL string with literals (backwards compatible)
+    - translate_with_params(uql) -> (sql, params) for safe execution
+    """
+
+    def __init__(self) -> None:
+        self._params: Optional[List[Any]] = None
+
+    # ---------- Public API ----------
 
     def translate(self, uql: Dict[str, Any]) -> str:
+        parsed = self._parse(uql)
+        self._params = None
+        sql = self._build_sql(parsed)
+        return sql
+
+    def translate_with_params(self, uql: Dict[str, Any]) -> Tuple[str, List[Any]]:
+        parsed = self._parse(uql)
+        self._params = []
         try:
-            query = UQLQuery.model_validate(uql)
+            sql = self._build_sql(parsed)
+            return sql, list(self._params)
+        finally:
+            # make mode explicit + avoid accidental reuse
+            self._params = None
+
+    # ---------- Parsing / orchestration ----------
+
+    def _parse(self, uql: Dict[str, Any]) -> UQLQuery:
+        try:
+            return UQLQuery.model_validate(uql)
         except ValidationError as e:
             raise ValueError(f"Invalid UQL query: {e}") from e
 
+    def _build_sql(self, query: UQLQuery) -> str:
         parts = [
             self._build_select_clause(query),
             self._build_from_clause(query),
-            self._build_where_clause(query),
-            self._build_order_by_clause(query),
-            self._build_limit_clause(query),
         ]
-        sql = " ".join(p for p in parts if p)
-        return sql.strip() + ";"
+
+        where_clause = self._build_where_clause(query)
+        if where_clause:
+            parts.append(where_clause)
+
+        order_by = self._build_order_by_clause(query)
+        if order_by:
+            parts.append(order_by)
+
+        limit_clause = self._build_limit_clause(query)
+        if limit_clause:
+            parts.append(limit_clause)
+
+        return " ".join(p for p in parts if p).strip() + ";"
 
     # ---------- Clause builders ----------
 
     def _build_select_clause(self, query: UQLQuery) -> str:
         if not query.select or query.select == ["*"]:
             return "SELECT *"
-        fields = [self._escape_column_name(field) for field in query.select]
-        return f"SELECT {', '.join(fields)}"
+        cols = ", ".join(self._escape_column_name(c) for c in query.select)
+        return f"SELECT {cols}"
 
     def _build_from_clause(self, query: UQLQuery) -> str:
         return f"FROM {self._escape_table_name(query.from_table)}"
@@ -200,31 +228,34 @@ class SQLTranslator(QueryTranslator):
             return ""
 
         visitor = SQLConditionTranslator(self)
-        where_parts: List[str] = []
+        parts: List[str] = []
 
         if query.where.must:
-            must_parts = [expr.accept(visitor) for expr in query.where.must]
-            if must_parts:
-                where_parts.append("(" + " AND ".join(must_parts) + ")")
+            parts.append(
+                " AND ".join(expr.accept(visitor) for expr in query.where.must)
+            )
+            parts[-1] = f"({parts[-1]})"
 
         if query.where.must_not:
-            must_not_parts = [
-                f"NOT ({expr.accept(visitor)})" for expr in query.where.must_not
+            not_parts = [
+                f"(NOT ({expr.accept(visitor)}))" for expr in query.where.must_not
             ]
-            if must_not_parts:
-                where_parts.append("(" + " AND ".join(must_not_parts) + ")")
+            parts.append(" AND ".join(not_parts))
+            parts[-1] = f"({parts[-1]})"
 
-        if not where_parts:
+        if not parts:
             return ""
-        return "WHERE " + " AND ".join(where_parts)
+
+        return "WHERE " + " AND ".join(parts)
 
     def _build_order_by_clause(self, query: UQLQuery) -> str:
         if not query.orderBy:
             return ""
-        clauses: List[str] = []
+        items = []
         for item in query.orderBy:
-            clauses.append(f"{self._escape_column_name(item.field)} {item.order}")
-        return "ORDER BY " + ", ".join(clauses)
+            col = self._escape_column_name(item.field)
+            items.append(f"{col} {item.order}")
+        return "ORDER BY " + ", ".join(items)
 
     def _build_limit_clause(self, query: UQLQuery) -> str:
         limit = query.limit
@@ -238,7 +269,7 @@ class SQLTranslator(QueryTranslator):
             return f"LIMIT {limit}"
         return f"LIMIT {limit} OFFSET {offset}"
 
-    # ---------- Escaping / literals ----------
+    # ---------- Escaping / identifiers ----------
 
     def _escape_identifier(self, identifier: str) -> str:
         """Dialect hook: quote a single identifier segment."""
@@ -261,6 +292,53 @@ class SQLTranslator(QueryTranslator):
         validate_qualified_name(raw, allow_star=False, allow_trailing_star=False)
         parts = [p.strip() for p in raw.split(".") if p.strip()]
         return ".".join(self._escape_identifier(p) for p in parts)
+
+    # ---------- Values / parameterization ----------
+
+    def _param_placeholder(self, index_1_based: int) -> str:
+        """
+        Dialect hook for placeholders in translate_with_params() mode.
+
+        Default: DB-API 'format' style (%s).
+        """
+        return "%s"
+
+    def _value(self, value: Any) -> str:
+        """
+        Render a scalar value as either:
+          - SQL literal (translate mode), or
+          - placeholder + parameter capture (translate_with_params mode)
+        """
+        if self._params is None:
+            return self._format_value(value)
+
+        # In param mode, bind scalars only here.
+        if isinstance(value, (list, tuple)):
+            raise ValueError(
+                "Internal error: list value must be rendered via _values_list()"
+            )
+
+        self._params.append(value)
+        return self._param_placeholder(len(self._params))
+
+    def _values_list(self, values: List[Any]) -> str:
+        """
+        Render a non-empty list for IN (...) in either mode.
+        """
+        if not values:
+            raise ValueError("Empty lists cannot be rendered")
+
+        if self._params is None:
+            # literal mode keeps existing behavior
+            return self._format_value(values)
+
+        placeholders: List[str] = []
+        for v in values:
+            if isinstance(v, (list, tuple)):
+                raise ValueError("Nested lists are not supported in IN/NIN")
+            self._params.append(v)
+            placeholders.append(self._param_placeholder(len(self._params)))
+        return "(" + ", ".join(placeholders) + ")"
 
     def _escape_string(self, value: str) -> str:
         """Dialect hook: escape a Python string for SQL string literals."""
@@ -298,13 +376,15 @@ class SQLTranslator(QueryTranslator):
         if case_insensitive:
             clause = self._render_ilike(field_sql, pattern)
         else:
-            clause = f"{field_sql} LIKE {self._format_value(pattern)} ESCAPE '{_LIKE_ESCAPE_CHAR}'"
+            clause = (
+                f"{field_sql} LIKE {self._value(pattern)} ESCAPE '{_LIKE_ESCAPE_CHAR}'"
+            )
         return f"NOT ({clause})" if negate else clause
 
     def _render_ilike(self, field_sql: str, pattern: object) -> str:
         # Default: case-insensitive via LOWER()
         return (
-            f"LOWER({field_sql}) LIKE LOWER({self._format_value(pattern)}) "
+            f"LOWER({field_sql}) LIKE LOWER({self._value(str(pattern))}) "
             f"ESCAPE '{_LIKE_ESCAPE_CHAR}'"
         )
 

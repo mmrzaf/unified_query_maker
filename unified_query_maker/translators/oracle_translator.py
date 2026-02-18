@@ -10,6 +10,10 @@ class OracleTranslator(SQLTranslator):
         """Escape identifiers with double quotes in Oracle."""
         return f'"{identifier}"'
 
+    def _param_placeholder(self, index_1_based: int) -> str:
+        # Oracle positional binds: :1, :2, ...
+        return f":{index_1_based}"
+
     def _build_limit_clause(self, query: UQLQuery) -> str:
         """
         Oracle pagination semantics:
@@ -35,4 +39,4 @@ class OracleTranslator(SQLTranslator):
         return "1" if value else "0"
 
     def _render_regex(self, field_sql: str, pattern: object) -> str:
-        return f"REGEXP_LIKE({field_sql}, {self._format_value(pattern)})"
+        return f"REGEXP_LIKE({field_sql}, {self._value(pattern)})"
